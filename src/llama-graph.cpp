@@ -555,6 +555,9 @@ ggml_tensor * llm_graph_context::build_lora_mm(
           ggml_tensor * w,
           ggml_tensor * cur) const {
     ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);
+    // here we use ik_llama.cpp kernel to process weight-activation mat mul
+    assert(ggml_backend_buffer_get_usage(w->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    ggml_set_ikquant(res);
 
     for (const auto & lora : *loras) {
         llama_adapter_lora_weight * lw = lora.first->get_weight(w);

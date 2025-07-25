@@ -395,7 +395,24 @@ extern "C" {
         // GGML_TYPE_IQ4_NL_4_4 = 36,
         // GGML_TYPE_IQ4_NL_4_8 = 37,
         // GGML_TYPE_IQ4_NL_8_8 = 38,
-        GGML_TYPE_COUNT   = 39,
+        GGML_TYPE_Q8_0_X4 = 97,
+        GGML_TYPE_Q8_2_X4 = 99,
+        GGML_TYPE_IQ2_K   = 137,
+        GGML_TYPE_IQ3_K   = 138,
+        GGML_TYPE_IQ4_K   = 139,
+        GGML_TYPE_IQ5_K   = 140,
+        GGML_TYPE_IQ6_K   = 141,
+        GGML_TYPE_IQ4_KS  = 144,
+        GGML_TYPE_IQ2_KS  = 145,
+        GGML_TYPE_IQ4_KSS = 146,
+        GGML_TYPE_IQ5_KS  = 152,
+        GGML_TYPE_IQ2_KT  = 153,
+        GGML_TYPE_IQ3_KT  = 154,
+        GGML_TYPE_IQ4_KT  = 155,
+        GGML_TYPE_IQ3_KS  = 156,
+        GGML_TYPE_Q8_0_R8 = 208,
+        GGML_TYPE_Q8_K_R8 = 399,
+        GGML_TYPE_COUNT,
     };
 
     // precision
@@ -430,6 +447,19 @@ extern "C" {
         GGML_FTYPE_MOSTLY_IQ4_XS  = 22, // except 1d tensors
         GGML_FTYPE_MOSTLY_IQ1_M   = 23, // except 1d tensors
         GGML_FTYPE_MOSTLY_BF16    = 24, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ2_K   = 130, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ3_K   = 131, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ4_K   = 132, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ5_K   = 133, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ6_K   = 134, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ4_KS  = 137, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ2_KS  = 138, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ4_KSS = 139, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ5_KS  = 141, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ2_KT  = 142, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ3_KT  = 143, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ4_KT  = 144, // except 1d tensors
+        GGML_FTYPE_MOSTLY_IQ3_KS  = 145, // except 1d tensors
     };
 
     // available tensor operations:
@@ -584,6 +614,7 @@ extern "C" {
         GGML_TENSOR_FLAG_OUTPUT =  2, // ...is an output for the GGML compute graph
         GGML_TENSOR_FLAG_PARAM  =  4, // ...contains trainable parameters
         GGML_TENSOR_FLAG_LOSS   =  8, // ...defines loss for numerical optimization (multiple loss tensors add up)
+        GGML_TENSOR_FLAG_IKQ    = 16,
     };
 
     struct ggml_init_params {
@@ -801,6 +832,7 @@ extern "C" {
     GGML_API void ggml_set_output(struct ggml_tensor * tensor);
     GGML_API void ggml_set_param(struct ggml_tensor * tensor);
     GGML_API void ggml_set_loss(struct ggml_tensor * tensor);
+    GGML_API void ggml_set_ikquant(struct ggml_tensor * tensor);
 
     //
     // operations on tensors with backpropagation
