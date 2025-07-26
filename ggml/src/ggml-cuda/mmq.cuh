@@ -2578,7 +2578,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq2_k * bxi = (const block_iq2_k *)(x + i*stride) + kbx0;
+        const block_iq2_k * bxi = (const block_iq2_k *)x + kbx0 + i*stride;
 
         auto all_values = (const int *)iq2k_table;
 
@@ -2647,7 +2647,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq3_k * bxi = (const block_iq3_k *)(x + i*stride) + kbx0;
+        const block_iq3_k * bxi = (const block_iq3_k *)x + kbx0 + i*stride;
 
         const float d = bxi->d;
 
@@ -2725,7 +2725,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq4_k * bxi = (const block_iq4_k *)(x + i*stride) + kbx0;
+        const block_iq4_k * bxi = (const block_iq4_k *)x + kbx0 + i*stride;
         const uint16_t extra = bxi->extra >> 2*kqsx;
 
         auto values_l = iq4k_table + ((extra & 1) << 8);
@@ -2800,7 +2800,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq5_k * bxi = (const block_iq5_k *)(x + i*stride) + kbx0;
+        const block_iq5_k * bxi = (const block_iq5_k *)x + kbx0 + i*stride;
 
         int qh = get_int_b4(bxi->qh, kqsx);
         uint16_t extra = bxi->extra >> (kqsx/4);
@@ -2878,7 +2878,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq6_k * bxi = (const block_iq6_k *)(x + i*stride) + kbx0;
+        const block_iq6_k * bxi = (const block_iq6_k *)x + kbx0 + i*stride;
 
         const float d = bxi->d;
         uint16_t extra = bxi->extra >> (kqsx/4);
@@ -2948,7 +2948,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq2_ks * bxi = (const block_iq2_ks *)(x + i*stride + sizeof(half)) + kbx0;
+        const block_iq2_ks * bxi = (const block_iq2_ks *)(x + sizeof(half)) + kbx0 + i*stride;
 
         uint16_t extra = bxi->extra >> 4*(kqsx/8);
         int q2 = get_int_b2(bxi->qs, kqsx);
@@ -3021,7 +3021,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const half * dptr = (const half *)(x + i*stride);
+        const half * dptr = (const half *)((const block_iq3_ks *)x + i*stride);
         const float d = __half2float(dptr[0]);
         const block_iq3_ks * bxi = (const block_iq3_ks *)(dptr + 1) + kbx0;
 
@@ -3097,7 +3097,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const float * dptr = (const float *)(x + i*stride);
+        const float * dptr = (const float *)((const block_iq4_ks *)x + i*stride);
         const block_iq4_ks * bxi = (const block_iq4_ks *)(dptr + 1) + kbx0;
         const int ls = (bxi->scales[kqsx] & 254) - 127;
 
@@ -3158,7 +3158,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const float * dptr = (const float *)(x + i*stride);
+        const float * dptr = (const float *)((const block_iq5_ks *)x + i*stride);
         const float d = dptr[0];
         const block_iq5_ks * bxi = (const block_iq5_ks *)(dptr + 1) + kbx0;
 
@@ -3223,7 +3223,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq2_kt * bxi = (const block_iq2_kt *)(x + i*stride + sizeof(float)) + kbx0;
+        const block_iq2_kt * bxi = (const block_iq2_kt *)(x + sizeof(float)) + kbx0 + i*stride;
 
         int ib32 = kqsx/4;
         int j    = kqsx%4;
@@ -3300,7 +3300,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq3_kt * bxi = (const block_iq3_kt *)(x + i*stride + sizeof(float)) + kbx0;
+        const block_iq3_kt * bxi = (const block_iq3_kt *)(x + sizeof(float)) + kbx0 + i*stride;
 
         int ib32 = kqsx/4;
         int j    = kqsx%4;
@@ -3383,7 +3383,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq4_kt * bxi = (const block_iq4_kt *)(x + i*stride + sizeof(float)) + kbx0;
+        const block_iq4_kt * bxi = (const block_iq4_kt *)(x + sizeof(float)) + kbx0 + i*stride;
 
         int ib32 = kqsx/4;
         int j    = kqsx%4;
