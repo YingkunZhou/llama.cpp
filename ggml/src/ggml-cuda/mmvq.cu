@@ -574,6 +574,12 @@ void ggml_cuda_op_mul_mat_vec_q(
 
     const int64_t ne0 = dst->ne[0];
 
+    if (iqk_ggml_cuda_op_mul_mat_vec_q(ctx, src0->type,
+        ne00, ne0, 1, 0, 0, 0, 0,
+        src0_dd_i, src1_ddq_i, dst_dd_i, nullptr,
+        row_low, row_high, src1_ncols,
+        src1_padded_row_size, stream)) return;
+
     int id = ggml_cuda_get_device();
 
     // the main device has a larger memory buffer to hold the results from all GPUs

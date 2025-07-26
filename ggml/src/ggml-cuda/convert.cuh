@@ -29,3 +29,5 @@ typedef to_t_nc_cuda_t<nv_bfloat16> to_bf16_nc_cuda_t;
 to_fp32_nc_cuda_t ggml_get_to_fp32_nc_cuda(ggml_type type);
 to_fp16_nc_cuda_t ggml_get_to_fp16_nc_cuda(ggml_type type);
 to_bf16_nc_cuda_t ggml_get_to_bf16_nc_cuda(ggml_type type);
+using iqk_to_t_cuda_t = void (*)(const void * __restrict__ x, half * __restrict__ y, int64_t nrows, int64_t n_per_row, cudaStream_t stream);
+iqk_to_t_cuda_t iqk_ggml_get_to_fp16_cuda(ggml_type type);

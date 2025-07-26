@@ -259,7 +259,47 @@ void ggml_cuda_op_mul_mat_q(
         1, 1, 0, 0, 0,
         use_stream_k};
 
+    switch (src0->type) {
+    case GGML_TYPE_IQ2_K:
+        mul_mat_q_case<GGML_TYPE_IQ2_K>(ctx, args, stream);
+        break;
+    case GGML_TYPE_IQ3_K:
+        mul_mat_q_case<GGML_TYPE_IQ3_K>(ctx, args, stream);
+        break;
+    case GGML_TYPE_IQ4_K:
+        mul_mat_q_case<GGML_TYPE_IQ4_K>(ctx, args, stream);
+        break;
+    case GGML_TYPE_IQ5_K:
+        mul_mat_q_case<GGML_TYPE_IQ5_K>(ctx, args, stream);
+        break;
+    case GGML_TYPE_IQ6_K:
+        mul_mat_q_case<GGML_TYPE_IQ6_K>(ctx, args, stream);
+        break;
+    case GGML_TYPE_IQ2_KS:
+        mul_mat_q_case<GGML_TYPE_IQ2_KS>(ctx, args, stream);
+        break;
+    case GGML_TYPE_IQ3_KS:
+        mul_mat_q_case<GGML_TYPE_IQ3_KS>(ctx, args, stream);
+        break;
+    case GGML_TYPE_IQ4_KS:
+        mul_mat_q_case<GGML_TYPE_IQ4_KS>(ctx, args, stream);
+        break;
+    case GGML_TYPE_IQ5_KS:
+        mul_mat_q_case<GGML_TYPE_IQ5_KS>(ctx, args, stream);
+        break;
+    case GGML_TYPE_IQ2_KT:
+        mul_mat_q_case<GGML_TYPE_IQ2_KT>(ctx, args, stream);
+        break;
+    case GGML_TYPE_IQ3_KT:
+        mul_mat_q_case<GGML_TYPE_IQ3_KT>(ctx, args, stream);
+        break;
+    case GGML_TYPE_IQ4_KT:
+        mul_mat_q_case<GGML_TYPE_IQ4_KT>(ctx, args, stream);
+        break;
+    default:
     ggml_cuda_mul_mat_q_switch_type(ctx, args, stream);
+    break;
+    }
 
     GGML_UNUSED(src1);
     GGML_UNUSED(dst);
@@ -293,6 +333,79 @@ bool ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11) {
         case GGML_TYPE_IQ1_S:
         case GGML_TYPE_IQ4_XS:
         case GGML_TYPE_IQ4_NL:
+            mmq_supported = true;
+            break;
+        default:
+            mmq_supported = false;
+            break;
+    }
+
+    if (!mmq_supported) {
+        return false;
+    }
+
+    if (new_mma_available(cc)) {
+        return true;
+    }
+
+    if (ggml_cuda_highest_compiled_arch(cc) < GGML_CUDA_CC_DP4A) {
+        return false;
+    }
+
+#ifdef GGML_CUDA_FORCE_MMQ
+    return true;
+#endif //GGML_CUDA_FORCE_MMQ
+
+    if (GGML_CUDA_CC_IS_NVIDIA(cc)) {
+        return !fp16_mma_hardware_available(cc) || ne11 < MMQ_DP4A_MAX_BATCH_SIZE;
+    }
+
+    return (!GGML_CUDA_CC_IS_RDNA4(cc) && !GGML_CUDA_CC_IS_RDNA3(cc) && !GGML_CUDA_CC_IS_CDNA(cc)) || ne11 < MMQ_DP4A_MAX_BATCH_SIZE;
+}
+bool iqk_ggml_cuda_should_use_mmq(enum ggml_type type, int cc, int64_t ne11) {
+#ifdef GGML_CUDA_FORCE_CUBLAS
+    return false;
+#endif // GGML_CUDA_FORCE_CUBLAS
+
+    bool mmq_supported;
+
+    switch (type) {
+        case GGML_TYPE_Q2_K: mmq_supported = ne11 < 384; break;
+        case GGML_TYPE_Q3_K:
+        case GGML_TYPE_Q6_K:
+        case GGML_TYPE_IQ2_XS:
+        case GGML_TYPE_IQ2_S:
+            mmq_supported = ne11 < 1536;
+            break;
+        case GGML_TYPE_IQ2_K:
+            mmq_supported = ne11 < 2048;
+            break;
+        case GGML_TYPE_IQ3_K:
+        case GGML_TYPE_IQ4_K:
+        case GGML_TYPE_IQ5_K:
+        case GGML_TYPE_IQ6_K:
+            mmq_supported = ne11 < 1024;
+            break;
+        case GGML_TYPE_Q4_0:
+        case GGML_TYPE_Q4_1:
+        case GGML_TYPE_Q5_0:
+        case GGML_TYPE_Q5_1:
+        case GGML_TYPE_Q8_0:
+        case GGML_TYPE_Q4_K:
+        case GGML_TYPE_Q5_K:
+        case GGML_TYPE_IQ2_XXS:
+        case GGML_TYPE_IQ3_XXS:
+        case GGML_TYPE_IQ3_S:
+        case GGML_TYPE_IQ1_S:
+        case GGML_TYPE_IQ4_XS:
+        case GGML_TYPE_IQ4_NL:
+        case GGML_TYPE_IQ3_KS:
+        case GGML_TYPE_IQ4_KS:
+        case GGML_TYPE_IQ5_KS:
+        case GGML_TYPE_IQ2_KS:
+        case GGML_TYPE_IQ2_KT:
+        case GGML_TYPE_IQ3_KT:
+        case GGML_TYPE_IQ4_KT:
             mmq_supported = true;
             break;
         default:
