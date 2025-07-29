@@ -1318,7 +1318,16 @@ size_t ggml_type_size(enum ggml_type type) {
 
 size_t ggml_row_size(enum ggml_type type, int64_t ne) {
     assert(ne % ggml_blck_size(type) == 0);
-    return ggml_type_size(type)*ne/ggml_blck_size(type);
+    size_t row_meta_size = 0;
+    if (type == GGML_TYPE_IQ2_KS || type == GGML_TYPE_IQ2_KS) {
+        row_meta_size = 2;
+    }
+    else if (type == GGML_TYPE_IQ4_KS  || type == GGML_TYPE_IQ5_KS ||
+             type == GGML_TYPE_IQ4_KSS || type == GGML_TYPE_IQ2_KT ||
+             type == GGML_TYPE_IQ3_KT  || type == GGML_TYPE_IQ4_KT) {
+        row_meta_size = 4;
+    }
+    return row_meta_size + ggml_type_size(type)*ne/ggml_blck_size(type);
 }
 
 double ggml_type_sizef(enum ggml_type type) {
@@ -1784,7 +1793,7 @@ static struct ggml_tensor * ggml_new_tensor_impl(
     }
 
     result->nb[0] = ggml_type_size(type);
-    result->nb[1] = result->nb[0]*(result->ne[0]/ggml_blck_size(type));
+    result->nb[1] = ggml_row_size(type, result->ne[0]);
     for (int i = 2; i < GGML_MAX_DIMS; i++) {
         result->nb[i] = result->nb[i - 1]*result->ne[i - 1];
     }
