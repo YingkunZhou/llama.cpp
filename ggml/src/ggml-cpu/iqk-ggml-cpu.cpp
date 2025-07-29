@@ -1,5 +1,7 @@
+#define GGML_COMMON_DECL_C
 #include "ggml-cpu.h"
 #include "repack.h"
+#include "simd-mappings.h"
 
 #define MM256_SET_M128I(a, b) _mm256_insertf128_si256(_mm256_castsi128_si256(b), (a), 1)
 
@@ -199,20 +201,14 @@ struct ConstInfo
 
 struct ConstInfo cl;
 
-typedef struct {
-    uint8_t scales[QK_K/16]; // scales and mins, quantized with 4 bits
-    uint8_t qs[QK_K/4];      // quants
-    ggml_half d;    // super-block scale for quantized scales
-    ggml_half dmin; // super-block scale for quantized mins
-} iqk_block_q2_K;
 template <int nrc_y>
 static inline void q2k_deq_new_block(int i, const block_q8_K **q8, struct BlockInfo * deq, __m256 * accm, __m256i * scales) {
-    const iqk_block_q2_K * x = (const iqk_block_q2_K *) deq->x;
-    deq->d = GGML_FP16_TO_FP32(x[i].d);
+    const block_q2_K * x = (const block_q2_K *) deq->x;
+    deq->d = GGML_CPU_FP16_TO_FP32(x[i].d);
     const __m128i mins_and_scales = _mm_loadu_si128((const __m128i*)x[i].scales);
     const __m128i scales8 = _mm_and_si128(mins_and_scales, cl.m4);
     const __m128i mins8 = _mm_and_si128(_mm_srli_epi16(mins_and_scales, 4), cl.m4);
-    process_mins_16<nrc_y>(_mm256_cvtepi8_epi16(mins8), q8, i, -GGML_FP16_TO_FP32(x[i].dmin), accm);
+    process_mins_16<nrc_y>(_mm256_cvtepi8_epi16(mins8), q8, i, -GGML_CPU_FP16_TO_FP32(x[i].dmin), accm);
     prepare_scales_16(_mm256_cvtepi8_epi16(scales8), scales);
 }
 
@@ -234,9 +230,7 @@ static void q2k_mul_mat(int n, const void * vx, size_t bx, struct DataInfo * inf
     //template <int nrc, typename block_q8 = block_q8_K> struct Q8
     // Q8<nrc_y> q8(info);
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     __m256i all_scales[2];
     __m256i scales[4];
@@ -275,7 +269,7 @@ static void q2k_mul_mat(int n, const void * vx, size_t bx, struct DataInfo * inf
 template <int nrc_y>
 static inline void q3k_deq_new_block(int i, const block_q8_K **q8, struct BlockInfo * deq, __m256 * accm, __m256i * scales) {
     const block_q3_K * x = (const block_q3_K *) deq->x;
-    deq->d = GGML_FP16_TO_FP32(x[i].d);
+    deq->d = GGML_CPU_FP16_TO_FP32(x[i].d);
     // hbits.load();
     deq->hbits = _mm256_loadu_si256((const __m256i *)x[i].hmask);
     // sc3.make_scales((const uint16_t *)x[i].scales)
@@ -312,9 +306,7 @@ static void q3k_mul_mat(int n, const void * vx, size_t bx, struct DataInfo * inf
     assert(n%QK_K == 0);
     const int nb = n/QK_K;
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     __m256i all_scales[2];
     __m256i scales[4];
@@ -353,12 +345,6 @@ static inline void q4k_avx2_prepare(int i, int j, struct BlockInfo * deq) {
     deq->values[3] = _mm256_and_si256(_mm256_srli_epi16(q4bits, 4), cl.ml);
 }
 
-typedef struct {
-    ggml_half d;    // super-block scale for quantized scales
-    ggml_half dmin; // super-block scale for quantized mins
-    uint8_t scales[K_SCALE_SIZE]; // scales and mins, quantized with 6 bits
-    uint8_t qs[QK_K/2];           // 4--bit quants
-} iqk_block_q4_K;
 // struct DequantizerQ4K_AVX2 final : public BaseDequantizer<block_q4_K>
 template <int nrc_y>
 static void q4k_mul_mat_X4(int n, const void * vx, size_t bx, struct DataInfo * info, int nrc_x) {
@@ -367,9 +353,7 @@ static void q4k_mul_mat_X4(int n, const void * vx, size_t bx, struct DataInfo * 
 
     // Q8<nrc_y, block_q8_2_x4> q8(info);
     const block_q8_2_x4 * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
 
     struct BlockInfo deq;
 
@@ -382,8 +366,8 @@ static void q4k_mul_mat_X4(int n, const void * vx, size_t bx, struct DataInfo * 
         for (int iy = 0; iy < nrc_y; ++iy) accd[iy] = _mm256_setzero_ps();
         deq.x = (const void *)((const char *)vx + bx*ix);
         for (int i = 0; i < nb; ++i) {
-            const iqk_block_q4_K * deq_x = (const iqk_block_q4_K *)deq.x;
-            deq.d = GGML_FP16_TO_FP32(deq_x[i].d);
+            const block_q4_K * deq_x = (const block_q4_K *)deq.x;
+            deq.d = GGML_CPU_FP16_TO_FP32(deq_x[i].d);
             __m256 vm = _mm256_cvtph_ps(_mm_set1_epi16(deq_x[i].dmin));
             iqk_make_q4_scales(deq_x[i].scales, utmp);
             __m256 mins = _mm256_mul_ps(vm, _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)(utmp + 2)))));
@@ -448,13 +432,6 @@ static inline void q5k_avx2_prepare(int i, int j, struct BlockInfo * deq) {
     deq->values[3] = _mm256_or_si256(deq->values[3], _mm256_and_si256(_mm256_slli_epi16(deq->hbits, 1), cl.mh));
 }
 
-typedef struct {
-    ggml_half d;    // super-block scale for quantized scales
-    ggml_half dmin; // super-block scale for quantized mins
-    uint8_t scales[K_SCALE_SIZE]; // scales and mins, quantized with 6 bits
-    uint8_t qh[QK_K/8];           // quants, high bit
-    uint8_t qs[QK_K/2];           // quants, low 4 bits
-} iqk_block_q5_K;
 // struct DequantizerQ5K_AVX2 final : public BaseDequantizer<block_q5_K>
 template <int nrc_y>
 static void q5k_mul_mat_X4(int n, const void * vx, size_t bx, struct DataInfo * info, int nrc_x) {
@@ -462,9 +439,7 @@ static void q5k_mul_mat_X4(int n, const void * vx, size_t bx, struct DataInfo * 
     const int nb = n / QK_K;
 
     const block_q8_2_x4 * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
 
     struct BlockInfo deq;
 
@@ -477,8 +452,8 @@ static void q5k_mul_mat_X4(int n, const void * vx, size_t bx, struct DataInfo * 
         for (int iy = 0; iy < nrc_y; ++iy) accd[iy] = _mm256_setzero_ps();
         deq.x = (const void *)((const char *)vx + bx*ix);
         for (int i = 0; i < nb; ++i) {
-            const iqk_block_q5_K * deq_x = (const iqk_block_q5_K *)deq.x;
-            deq.d = GGML_FP16_TO_FP32(deq_x[i].d);
+            const block_q5_K * deq_x = (const block_q5_K *)deq.x;
+            deq.d = GGML_CPU_FP16_TO_FP32(deq_x[i].d);
             __m256 vm = _mm256_cvtph_ps(_mm_set1_epi16(deq_x[i].dmin));
             iqk_make_q4_scales(deq_x[i].scales, utmp);
             __m256 mins = _mm256_mul_ps(vm, _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)(utmp + 2)))));
@@ -547,9 +522,7 @@ static void q6k_mul_mat_X4(int n, const void * vx, size_t bx, struct DataInfo * 
     const int nb = n / QK_K;
 
     const block_q8_2_x4 * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
 
     struct BlockInfo deq;
 
@@ -566,7 +539,7 @@ static void q6k_mul_mat_X4(int n, const void * vx, size_t bx, struct DataInfo * 
         deq.x = (const void *)((const char *)vx + bx*ix);
         for (int i = 0; i < nb; ++i) {
             const block_q6_K * deq_x = (const block_q6_K *)deq.x;
-            deq.d = GGML_FP16_TO_FP32(deq_x[i].d);
+            deq.d = GGML_CPU_FP16_TO_FP32(deq_x[i].d);
             __m256 vd = _mm256_set1_ps(deq.d);
             // auto sc16 = (deq.make_scales(i), shuff);
             __m256i sc16 = _mm256_shuffle_epi8(_mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i *)deq_x[i].scales)), shuff);
@@ -616,7 +589,7 @@ static void q6k_mul_mat_X4(int n, const void * vx, size_t bx, struct DataInfo * 
 template <int nrc_y>
 static inline __m256i iq4xs_deq_new_block(int i, const block_q8_K **q8, struct BlockInfo * deq, __m256 * accm) {
     const block_iq4_xs * x = (const block_iq4_xs *) deq->x;
-    deq->d = GGML_FP16_TO_FP32(x[i].d);
+    deq->d = GGML_CPU_FP16_TO_FP32(x[i].d);
     // auto scales128 = siq4.make_scales(*(const uint32_t *)x[i].scales_l, x[i].scales_h);
     uint32_t tmp32 = x[i].scales_h | (x[i].scales_h << 14);
     const __m128i sh = _mm_slli_epi16(_mm_and_si128(_mm_srlv_epi32(_mm_set1_epi32(tmp32), cl.hshift), cl.hmask), 4);
@@ -654,9 +627,7 @@ static void iq4xs_mul_mat(int n, const void * vx, size_t bx, struct DataInfo * i
     const int nb = n / QK_K;
 
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
     struct BlockInfo deq;
 
     __m256  accd[nrc_y];
@@ -736,9 +707,7 @@ static void iq2ks_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *in
     const int nb = n / QK_K;
 
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     struct BlockInfo deq;
     __m256  accd[nrc_y];
@@ -748,7 +717,7 @@ static void iq2ks_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *in
         for (int iy = 0; iy < nrc_y; ++iy) accd[iy] = _mm256_setzero_ps();
         // deq.new_row(ix);
         const ggml_half * dptr = (const ggml_half *)((const char *)vx + bx*ix);
-        deq.d = GGML_FP16_TO_FP32(*dptr);
+        deq.d = GGML_CPU_FP16_TO_FP32(*dptr);
         deq.x = (const void *)(dptr + 1);
         for (int i = 0; i < nb; ++i) {
             // auto all_scales = deq.new_block(i, q8, accd);
@@ -779,7 +748,7 @@ static inline __m128i iq2k_make_scales(const uint8_t * scales_l) {
 template <int nrc_y>
 static inline void iq2k_deq_new_block(int i, const block_q8_K **q8, struct BlockInfo * deq, __m256 * accm, __m256i * scales) {
     const block_iq2_k * x = (const block_iq2_k *) deq->x;
-    deq->d = GGML_FP16_TO_FP32(x[i].d);
+    deq->d = GGML_CPU_FP16_TO_FP32(x[i].d);
     // iqxk.process(i, deq->d, x[i].extra, make_scales(x[i].scales), q8, accm, scales);
     __m256i scales16 = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(iq2k_make_scales(x[i].scales), cl.hshuff));
     __m128i extra128 = _mm_set1_epi16(x[i].extra);
@@ -811,9 +780,7 @@ static void iq2k_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *inf
     const int nb = n/QK_K;
 
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     __m256i all_scales[2];
     __m256i scales[4];
@@ -855,7 +822,7 @@ static inline __m128i iq3k_make_scales(uint16_t signs, const uint8_t * scales_l)
 template <int nrc_y>
 static inline void iq3k_deq_new_block(int i, const block_q8_K **q8, struct BlockInfo * deq, __m256 * accm, __m256i * scales) {
     const block_iq3_k * x = (const block_iq3_k *) deq->x;
-    deq->d = GGML_FP16_TO_FP32(x[i].d);
+    deq->d = GGML_CPU_FP16_TO_FP32(x[i].d);
     // iqxk.process(i, d, x[i].extra, make_scales(), q8, accm, scales);
     __m256i scales16 = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(iq3k_make_scales(x[i].scales_h, x[i].scales_l), cl.hshuff));
     __m128i extra128 = _mm_set1_epi16(x[i].extra);
@@ -904,9 +871,7 @@ static void iq3k_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *inf
     const int nb = n/QK_K;
 
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     __m256i all_scales[2];
     __m256i scales[4];
@@ -980,9 +945,7 @@ static void iq3ks_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *in
     const int nb = n / QK_K;
 
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     struct BlockInfo deq;
 
@@ -992,7 +955,7 @@ static void iq3ks_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *in
     for (int ix = 0; ix < nrc_x; ++ix) {
         for (int iy = 0; iy < nrc_y; ++iy) accd[iy] = _mm256_setzero_ps();
         const ggml_half * dptr = (const ggml_half *)((const char *)vx + bx*ix);
-        deq.d = GGML_FP16_TO_FP32(*dptr);
+        deq.d = GGML_CPU_FP16_TO_FP32(*dptr);
         deq.x = (const void *)(dptr + 1);
         for (int i = 0; i < nb; ++i) {
             __m256i all_scales = iq3ks_deq_new_block(i, &deq);
@@ -1062,9 +1025,7 @@ static void iq4kss_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *i
     const int nb = n / QK_K;
 
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     struct BlockInfo deq;
 
@@ -1127,9 +1088,7 @@ static void iq4ks_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *in
     const int nb = n / QK_K;
 
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     struct BlockInfo deq;
 
@@ -1172,7 +1131,7 @@ static inline __m128i iq4k_make_scales(const uint8_t * scales_l, const uint16_t 
 
 static inline void iq4k_deq_new_block(int i, struct BlockInfo * deq, __m256i * scales) {
     const block_iq4_k * x = (const block_iq4_k *) deq->x;
-    deq->d = GGML_FP16_TO_FP32(x[i].d);
+    deq->d = GGML_CPU_FP16_TO_FP32(x[i].d);
     __m128i scales8 = iq4k_make_scales(x[i].scales_l, (const uint16_t *)x[i].scales_h);
     __m256i scales16 = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales8, cl.hshuff));
     prepare_scales_16(scales16, scales);
@@ -1204,9 +1163,7 @@ static void iq4k_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *inf
     const int nb = n/QK_K;
 
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     __m256i all_scales[2];
     __m256i scales[4];
@@ -1288,9 +1245,7 @@ static void iq5ks_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *in
     const int nb = n / QK_K;
 
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     struct BlockInfo deq;
 
@@ -1346,7 +1301,7 @@ static inline __m128i iq5k_make_scales(const uint8_t * scales_l, const uint16_t 
 template <int nrc_y>
 static inline void iq5k_deq_new_block(int i, const block_q8_K **q8, struct BlockInfo * deq, __m256 * accm, __m256i * scales) {
     const block_iq5_k * x = (const block_iq5_k *) deq->x;
-    deq->d = GGML_FP16_TO_FP32(x[i].d);
+    deq->d = GGML_CPU_FP16_TO_FP32(x[i].d);
     __m256i scales16 = _mm256_cvtepi8_epi16(_mm_shuffle_epi8(iq5k_make_scales(x[i].scales_l, (const uint16_t *)x[i].scales_h), cl.hshuff));
     __m128i extra128 = _mm_set1_epi16(x[i].extra);
     extra128 = _mm_cmpeq_epi8(_mm_and_si128(extra128, cl.emask), cl.emask);
@@ -1386,9 +1341,7 @@ static void iq5k_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *inf
     const int nb = n/QK_K;
 
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     __m256i all_scales[2];
     __m256i scales[4];
@@ -1436,7 +1389,7 @@ static void load_iq6nl_values(__m256i * values) {
 template <int nrc_y>
 static inline void iq6k_deq_new_block(int i, const block_q8_K **q8, struct BlockInfo * deq, __m256 * accm, __m256i * scales) {
     const block_iq6_k * x = (const block_iq6_k *)deq->x;
-    deq->d = GGML_FP16_TO_FP32(x[i].d);
+    deq->d = GGML_CPU_FP16_TO_FP32(x[i].d);
     __m128i scales8 = _mm_loadu_si128((const __m128i*)x[i].scales);
     __m256i scales16 = _mm256_cvtepi8_epi16(scales8);
     __m128i extra128 = _mm_set1_epi16(x[i].extra);
@@ -1488,9 +1441,7 @@ static void iq6k_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *inf
     const int nb = n/QK_K;
 
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     __m256i all_scales[2];
     __m256i scales[4];
@@ -1630,9 +1581,7 @@ static void iq2kt_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *in
 
     __m256  accd[nrc_y];
     const block_q8_2_x4 * y[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        y[iy] = (const block_q8_2_x4 *)info->cy + (info->cur_y + iy)*info->by;
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) y[iy] = (const block_q8_2_x4 *)info->cy + (info->cur_y + iy)*info->by;
 
     __m256i  xv[4], dot[4];
     __m256   scales[2];
@@ -1697,9 +1646,7 @@ static void iq3kt_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *in
 
     __m256  accd[nrc_y];
     const block_q8_2_x4 * y[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        y[iy] = (const block_q8_2_x4 *)info->cy + (info->cur_y + iy)*info->by;
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) y[iy] = (const block_q8_2_x4 *)info->cy + (info->cur_y + iy)*info->by;
 
     __m256i  xv[4], sv[4], dot[4];
     __m256   scales[2];
@@ -1772,9 +1719,7 @@ static void iq4kt_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *in
 
     __m256  accd[nrc_y];
     const block_q8_2_x4 * y[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        y[iy] = (const block_q8_2_x4 *)info->cy + (info->cur_y + iy)*info->by;
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) y[iy] = (const block_q8_2_x4 *)info->cy + (info->cur_y + iy)*info->by;
 
     uint32_t values[64];
     __m256i  xv[4], dot[4];
@@ -1847,9 +1792,7 @@ template <int nrc_y>
 static void q8_1_r8_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *info, int nrc_x) {
     GGML_ASSERT(nrc_x%8 == 0);
     const block_q8_2_x4 * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
     int nb = n / QK8_0;
     __m256 acc[nrc_y];
     for (int i = 0; i < nrc_y; i++) acc[i] = _mm256_setzero_ps();
@@ -1919,9 +1862,7 @@ template <int nrc_y>
 static void q8_0_r8_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *info, int nrc_x) {
     GGML_ASSERT(nrc_x%8 == 0);
     const block_q8_2_x4 * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
 
     __m256i m1 = _mm256_set1_epi16(1);
     int nb = n / QK8_0;
@@ -2035,9 +1976,7 @@ template <int nrc_y>
 static void q8k_r8_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *info, int nrc_x) {
     GGML_ASSERT(nrc_x%8 == 0);
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) {
-        q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
-    }
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 #ifndef HAVE_FANCY_SIMD
     __m256i m1 = _mm256_set1_epi16(1);
 #endif
@@ -2473,7 +2412,7 @@ static bool iqk_convert_q2_k_q8_k_r8(int n, const void * vx, size_t bx, void * v
 
     int nb = n/QK_K;
 
-    const iqk_block_q2_K * x8[8];
+    const block_q2_K * x8[8];
 
     block_q8_k_r8 * y = (block_q8_k_r8 *)vy;
 
@@ -2487,11 +2426,11 @@ static bool iqk_convert_q2_k_q8_k_r8(int n, const void * vx, size_t bx, void * v
     __m256i perm = _mm256_setr_epi32(0, 4, 1, 5, 2, 6, 3, 7);
 
     for (int ix = 0; ix < nrc_x; ix += 8) {
-        for (int k = 0; k < 8; ++k) x8[k] = (const iqk_block_q2_K *)((const char *)vx + (ix + k)*bx);
+        for (int k = 0; k < 8; ++k) x8[k] = (const block_q2_K *)((const char *)vx + (ix + k)*bx);
         for (int i = 0; i < nb; ++i) {
             for (int k = 0; k < 8; ++k) {
-                __m256 vd = _mm256_set1_ps(GGML_FP16_TO_FP32(x8[k][i].d));
-                __m256 vm = _mm256_mul_ps(_mm256_set1_ps(GGML_FP16_TO_FP32(x8[k][i].dmin)), _mm256_set1_ps(-1.f));
+                __m256 vd = _mm256_set1_ps(GGML_CPU_FP16_TO_FP32(x8[k][i].d));
+                __m256 vm = _mm256_mul_ps(_mm256_set1_ps(GGML_CPU_FP16_TO_FP32(x8[k][i].dmin)), _mm256_set1_ps(-1.f));
                 __m256 block_max = _mm256_setzero_ps();
                 for (int i128 = 0; i128 < 2; ++i128) {
                     __m256i bits = _mm256_loadu_si256((const __m256i *)x8[k][i].qs+i128);
@@ -2576,7 +2515,7 @@ static bool iqk_convert_q3_k_q8_k_r8(int n, const void * vx, size_t bx, void * v
         for (int k = 0; k < 8; ++k) x8[k] = (const block_q3_K *)((const char *)vx + (ix + k)*bx);
         for (int i = 0; i < nb; ++i) {
             for (int k = 0; k < 8; ++k) {
-                float d = GGML_FP16_TO_FP32(x8[k][i].d);
+                float d = GGML_CPU_FP16_TO_FP32(x8[k][i].d);
                 __m256i hbits = _mm256_loadu_si256((const __m256i *)x8[k][i].hmask);
                 // sc3.make_scales((const uint16_t *)x8[k][i].scales)
                 const uint16_t * scales16 = (const uint16_t *)x8[k][i].scales;
@@ -2673,7 +2612,7 @@ static bool iqk_convert_q4_k_q8_1_r8(int n, const void * vx, size_t bx, void * v
 
     int nb = n/QK_K;
 
-    const iqk_block_q4_K * x8[8];
+    const block_q4_K * x8[8];
 
     block_q8_1_r8 * y = (block_q8_1_r8 *)vy;
 
@@ -2685,7 +2624,7 @@ static bool iqk_convert_q4_k_q8_1_r8(int n, const void * vx, size_t bx, void * v
     uint32_t block[8];
 
     for (int ix = 0; ix < nrc_x; ix += 8) {
-        for (int k = 0; k < 8; ++k) x8[k] = (const iqk_block_q4_K *)((const char *)vx + (ix + k)*bx);
+        for (int k = 0; k < 8; ++k) x8[k] = (const block_q4_K *)((const char *)vx + (ix + k)*bx);
         for (int i = 0; i < nb; ++i) {
             for (int k = 0; k < 8; ++k) {
                 dh[k+0] = x8[k][i].d;
@@ -2739,7 +2678,7 @@ static bool iqk_convert_q5_k_q8_1_r8(int n, const void * vx, size_t bx, void * v
 
     int nb = n/QK_K;
 
-    const iqk_block_q5_K * x8[8];
+    const block_q5_K * x8[8];
 
     block_q8_1_r8 * y = (block_q8_1_r8 *)vy;
 
@@ -2751,7 +2690,7 @@ static bool iqk_convert_q5_k_q8_1_r8(int n, const void * vx, size_t bx, void * v
     uint32_t block[8];
 
     for (int ix = 0; ix < nrc_x; ix += 8) {
-        for (int k = 0; k < 8; ++k) x8[k] = (const iqk_block_q5_K *)((const char *)vx + (ix + k)*bx);
+        for (int k = 0; k < 8; ++k) x8[k] = (const block_q5_K *)((const char *)vx + (ix + k)*bx);
         for (int i = 0; i < nb; ++i) {
             for (int k = 0; k < 8; ++k) {
                 dh[k+0] = x8[k][i].d;
@@ -2824,7 +2763,7 @@ static bool iqk_convert_q6_k_q8_0_r8(int n, const void * vx, size_t bx, void * v
         for (int k = 0; k < 8; ++k) x8[k] = (const block_q6_K *)((const char *)vx + (ix + k)*bx);
         for (int i = 0; i < nb; ++i) {
             for (int k = 0; k < 8; ++k) {
-                float d = GGML_FP16_TO_FP32(x8[k][i].d);
+                float d = GGML_CPU_FP16_TO_FP32(x8[k][i].d);
                 const uint8_t * ql = x8[k][i].ql;
                 const uint8_t * qh = x8[k][i].qh;
                 for (int i128 = 0; i128 < 2; ++i128) {
@@ -2963,7 +2902,7 @@ static bool iqk_convert_iq4_xs_q8_k_r8(int n, const void * vx, size_t bx, void *
         for (int k = 0; k < 8; ++k) x8[k] = (const block_iq4_xs *)((const char *)vx + (ix + k)*bx);
         for (int i = 0; i < nb; ++i) {
             for (int k = 0; k < 8; ++k) {
-                float d = GGML_FP16_TO_FP32(x8[k][i].d);
+                float d = GGML_CPU_FP16_TO_FP32(x8[k][i].d);
                 for (int ib32 = 0; ib32 < 8; ++ib32) {
                     ls[2*ib32+0] = ls[2*ib32+1] = (((x8[k][i].scales_l[ib32/2] >> 4*(ib32%2)) & 0xf) | (((x8[k][i].scales_h >> 2*ib32) & 3) << 4)) - 32;
                     __m128i bits = _mm_loadu_si128((const __m128i *)x8[k][i].qs + ib32);
@@ -3074,7 +3013,7 @@ static bool iqk_convert_iq2_k_q8_k_r8(int n, const void * vx, size_t bx, void * 
         for (int k = 0; k < 8; ++k) x8[k] = (const block_iq2_k *)((const char *)vx + (ix+k)*bx);
         for (int i = 0; i < nb; ++i) {
             for (int k = 0; k < 8; ++k) {
-                float d = GGML_FP16_TO_FP32(x8[k][i].d);
+                float d = GGML_CPU_FP16_TO_FP32(x8[k][i].d);
                 uint64_t aux64; memcpy(&aux64, x8[k][i].scales, 8);
                 __m128i scl = _mm_and_si128(_mm_set_epi64x(aux64 >> 4, aux64), _mm_set1_epi8(0xf));
                 scl = _mm_add_epi8(scl, _mm_set1_epi8(-8));
@@ -3201,7 +3140,7 @@ static bool iqk_convert_iq3_k_q8_k_r8(int n, const void * vx, size_t bx, void * 
         for (int k = 0; k < 8; ++k) x8[k] = (const block_iq3_k *)((const char *)vx + (ix+k)*bx);
         for (int i = 0; i < nb; ++i) {
             for (int k = 0; k < 8; ++k) {
-                float d = GGML_FP16_TO_FP32(x8[k][i].d);
+                float d = GGML_CPU_FP16_TO_FP32(x8[k][i].d);
                 uint64_t aux64; memcpy(&aux64, x8[k][i].scales_l, 8);
                 __m128i scl = _mm_and_si128(_mm_set_epi64x(aux64 >> 4, aux64), _mm_set1_epi8(0xf));
                 scl = _mm_add_epi8(_mm_slli_epi16(scl, 1), _mm_set1_epi8(1));
@@ -3326,7 +3265,7 @@ static bool iqk_convert_iq4_k_q8_k_r8(int n, const void * vx, size_t bx, void * 
         for (int k = 0; k < 8; ++k) x8[k] = (const block_iq4_k *)((const char *)vx + (ix+k)*bx);
         for (int i = 0; i < nb; ++i) {
             for (int k = 0; k < 8; ++k) {
-                float d = GGML_FP16_TO_FP32(x8[k][i].d);
+                float d = GGML_CPU_FP16_TO_FP32(x8[k][i].d);
                 uint16_t extra = x8[k][i].extra;
                 //uint64_t aux64;
                 //memcpy(&aux64, x8[k][i].scales_l, 8);
@@ -3450,7 +3389,7 @@ static bool iqk_convert_iq5_k_q8_k_r8(int n, const void * vx, size_t bx, void * 
         for (int k = 0; k < 8; ++k) x8[k] = (const block_iq5_k *)((const char *)vx + (ix+k)*bx);
         for (int i = 0; i < nb; ++i) {
             for (int k = 0; k < 8; ++k) {
-                float d = GGML_FP16_TO_FP32(x8[k][i].d);
+                float d = GGML_CPU_FP16_TO_FP32(x8[k][i].d);
                 uint16_t extra = x8[k][i].extra;
                 __m256i hbits = _mm256_loadu_si256((const __m256i *)x8[k][i].qh);
                 for (int ib64 = 0; ib64 < 4; ++ib64) {
@@ -3514,7 +3453,7 @@ static bool iqk_convert_iq6_k_q8_k_r8(int n, const void * vx, size_t bx, void * 
         for (int k = 0; k < 8; ++k) x8[k] = (const block_iq6_k *)((const char *)vx + (ix+k)*bx);
         for (int i = 0; i < nb; ++i) {
             for (int k = 0; k < 8; ++k) {
-                float d = GGML_FP16_TO_FP32(x8[k][i].d);
+                float d = GGML_CPU_FP16_TO_FP32(x8[k][i].d);
                 helper.vec = _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)x8[k][i].scales));
                 uint16_t extra = x8[k][i].extra;
                 for (int i128 = 0; i128 < 2; ++i128) {
