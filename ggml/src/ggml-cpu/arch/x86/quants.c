@@ -531,6 +531,7 @@ static void iqk_quantize_row_q8_K(const float * x, void * vy, int64_t k) {
             _mm256_storeu_si256((__m256i *)q8, i0);
             q8 += 32;
         }
+        y[i].sum = d*block_sum_i32;
     }
 }
 
