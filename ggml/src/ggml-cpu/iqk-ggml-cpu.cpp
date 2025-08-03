@@ -2549,7 +2549,7 @@ struct DequantizerIQ4KS {
         all_scales[0] = _mm256_broadcastsi128_si256(scales128);
     }
     inline void prepare(int i, int j) {
-        iqk_q4bits_prepare(x[i].qs, j, ml, values);
+        iqk_prepare16(x[i].qs, j, ml, values);
         values[0] = _mm256_shuffle_epi8(iqk_values[x[i].scales[4*j+0] & 1], values[0]);
         values[1] = _mm256_shuffle_epi8(iqk_values[x[i].scales[4*j+1] & 1], values[1]);
         values[2] = _mm256_shuffle_epi8(iqk_values[x[i].scales[4*j+2] & 1], values[2]);
