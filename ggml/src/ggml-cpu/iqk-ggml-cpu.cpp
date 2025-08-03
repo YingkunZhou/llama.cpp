@@ -348,8 +348,9 @@ static void q45k_mul_mat_X4(int n, const void * vx, size_t bx, struct DataInfo *
             }
 
             __m256 all_scales = _mm256_mul_ps(_mm256_set1_ps(deq.d), _mm256_cvtepi32_ps(_mm256_cvtepu8_epi32(_mm_loadl_epi64((const __m128i *)utmp))));
-            scales[0] = _mm256_set_m128(_mm256_castps256_ps128(all_scales), _mm256_castps256_ps128(all_scales));
+            __m128 scales_l = _mm256_castps256_ps128(all_scales);
             __m128 scales_h = _mm256_extractf128_ps(all_scales, 1);
+            scales[0] = _mm256_set_m128(scales_l, scales_l);
             scales[1] = _mm256_set_m128(scales_h, scales_h);
 
             for (int j = 0; j < QK_K/128; ++j) {
