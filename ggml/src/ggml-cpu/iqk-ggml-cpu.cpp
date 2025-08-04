@@ -1211,7 +1211,7 @@ struct DequantizerQ3K {
 
 // Handles q4 bits scales/mins
 struct Q4BitsBlock {
-    inline void process(const uint8_t * q4, __m512i * values) {
+    inline void process(const uint8_t * q4, __m512i * values, const __m512i permute1, const __m512i permute2) {
         __m512i q4bits = _mm512_loadu_si512((const __m512i*)q4);
         __m512i tmp1 = _mm512_and_si512(q4bits, ml);
         __m512i tmp2 = _mm512_and_si512(_mm512_srli_epi16(q4bits, 4), ml);
@@ -1233,8 +1233,6 @@ struct Q4BitsBlock {
     }
 
     const __m512i ml = _mm512_set1_epi8(0xf);
-    const __m512i permute1 = _mm512_set_epi64(11, 10,  9,  8, 3, 2, 1, 0);
-    const __m512i permute2 = _mm512_set_epi64(15, 14, 13, 12, 7, 6, 5, 4);
 };
 
 struct DequantizerQ4K {
@@ -1243,7 +1241,7 @@ struct DequantizerQ4K {
     inline void compute_block(int i, const block_q8_K **q8, __m256 * accm, __m512 *  accd) {
         d = GGML_CPU_FP16_TO_FP32(x[i].d);
         // bits.prepare(x[i].qs);
-        q4bits.process(x[i].qs, values);
+        q4bits.process(x[i].qs, values, permute1, permute2);
         // auto all_scales = s8k.process_mins_and_scales_64(x[i].scales, -GGML_CPU_FP16_TO_FP32(x[i].dmin), i, q8, accm);
         __m512i scales[2];
         q45k.process<nrc_y>(x[i].scales, -GGML_CPU_FP16_TO_FP32(x[i].dmin), i, q8, accm, scales);
@@ -1256,6 +1254,8 @@ struct DequantizerQ4K {
     //Q4Bits
     __m512i values[4];
     Q4BitsBlock q4bits;
+    const __m512i permute1 = _mm512_set_epi64(11, 10,  9,  8, 3, 2, 1, 0);
+    const __m512i permute2 = _mm512_set_epi64(15, 14, 13, 12, 7, 6, 5, 4);
 
     Q45kScale q45k;
 };
@@ -1265,7 +1265,7 @@ struct DequantizerQ5K {
     template <int nrc_y>
     inline void compute_block(int i, const block_q8_K **q8, __m256 * accm, __m512 *  accd) {
         d = GGML_CPU_FP16_TO_FP32(x[i].d);
-        q4bits.process(x[i].qs, values);
+        q4bits.process(x[i].qs, values, permute1, permute2);
         // hbits.apply(x[i].qh, bits);
         __m256i hbits256 = _mm256_loadu_si256((const __m256i *)x[i].qh);
         __m512i hbits = _mm512_inserti32x8(_mm512_castsi256_si512(hbits256), _mm256_srli_epi16(hbits256, 1), 1);
@@ -1285,6 +1285,8 @@ struct DequantizerQ5K {
     //Q4Bits
     __m512i values[4];
     Q4BitsBlock q4bits;
+    const __m512i permute1 = _mm512_set_epi64(11, 10,  9,  8, 3, 2, 1, 0);
+    const __m512i permute2 = _mm512_set_epi64(15, 14, 13, 12, 7, 6, 5, 4);
     //HighBit5
     const __m512i mh = _mm512_set1_epi8(0x10);
 
@@ -1302,12 +1304,12 @@ struct DequantizerQ6K {
         __m512i hbits = _mm512_loadu_si512((const __m512i *)x[i].qh);
         __m512i tmp1 = _mm512_and_si512(_mm512_slli_epi16(hbits, 4), mh);
         __m512i tmp2 = _mm512_and_si512(_mm512_slli_epi16(hbits, 2), mh);
-        values[0] = _mm512_or_si512(values[0], _mm512_permutex2var_epi64(tmp1, q4bits.permute1, tmp2));
-        values[2] = _mm512_or_si512(values[2], _mm512_permutex2var_epi64(tmp1, q4bits.permute2, tmp2));
+        values[0] = _mm512_or_si512(values[0], _mm512_permutex2var_epi64(tmp1, permute1, tmp2));
+        values[2] = _mm512_or_si512(values[2], _mm512_permutex2var_epi64(tmp1, permute2, tmp2));
         tmp1 = _mm512_and_si512(hbits, mh);
         tmp2 = _mm512_and_si512(_mm512_srli_epi16(hbits, 2), mh);
-        values[1] = _mm512_or_si512(values[1], _mm512_permutex2var_epi64(tmp1, q4bits.permute1, tmp2));
-        values[3] = _mm512_or_si512(values[3], _mm512_permutex2var_epi64(tmp1, q4bits.permute2, tmp2));
+        values[1] = _mm512_or_si512(values[1], _mm512_permutex2var_epi64(tmp1, permute1, tmp2));
+        values[3] = _mm512_or_si512(values[3], _mm512_permutex2var_epi64(tmp1, permute2, tmp2));
         //////
         __m128i scales128 = _mm_loadu_si128((const __m128i *)x[i].scales);
         // sc16.process_mins_and_scales(i, -32.f*d, scales128, scales128, q8, accm, scales);
@@ -1322,6 +1324,8 @@ struct DequantizerQ6K {
     //Q4Bits
     __m512i values[4];
     Q4BitsBlock q4bits;
+    const __m512i permute1 = _mm512_set_epi64(11, 10,  9,  8, 3, 2, 1, 0);
+    const __m512i permute2 = _mm512_set_epi64(15, 14, 13, 12, 7, 6, 5, 4);
 
     const __m512i mh = _mm512_set1_epi8(0x30);
 
@@ -1546,11 +1550,11 @@ struct DequantizerIQ4KS {
         // We now have in bits.valuse[0]: 0...15, 32...47, 64...79, 96...111
         //                bits.valuse[1]: 16..31, 48...63, 80...95, 112..127
         //                etc.
-        __m512i tmp = _mm512_permutex2var_epi64(values[0], q4bits.permute1, values[1]);
-        values[1] = _mm512_shuffle_epi8(iqk_values, _mm512_permutex2var_epi64(values[0], q4bits.permute2, values[1]));
+        __m512i tmp = _mm512_permutex2var_epi64(values[0], permute1, values[1]);
+        values[1] = _mm512_shuffle_epi8(iqk_values, _mm512_permutex2var_epi64(values[0], permute2, values[1]));
         values[0] = _mm512_shuffle_epi8(iqk_values, tmp);
-        tmp = _mm512_permutex2var_epi64(values[2], q4bits.permute1, values[3]);
-        values[3] = _mm512_shuffle_epi8(iqk_values, _mm512_permutex2var_epi64(values[2], q4bits.permute2, values[3]));
+        tmp = _mm512_permutex2var_epi64(values[2], permute1, values[3]);
+        values[3] = _mm512_shuffle_epi8(iqk_values, _mm512_permutex2var_epi64(values[2], permute2, values[3]));
         values[2] = _mm512_shuffle_epi8(iqk_values, tmp);
         /////
         __m128i scales128 = _mm_cvtepu8_epi16(_mm_loadl_epi64((const __m128i *)x[i].scales));
@@ -1567,6 +1571,8 @@ struct DequantizerIQ4KS {
     //Q4Bits
     __m512i values[4];
     Q4BitsBlock q4bits;
+    const __m512i permute1 = _mm512_set_epi64(11, 10, 3, 2,  9,  8, 1, 0);
+    const __m512i permute2 = _mm512_set_epi64(15, 14, 7, 6, 13, 12, 5, 4);
 
     const __m256i iqk_val256 = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *)kvalues_iq4nl));
     const __m512i iqk_values = _mm512_inserti32x8(_mm512_castsi256_si512(iqk_val256), iqk_val256, 1);
@@ -1662,11 +1668,11 @@ struct DequantizerIQ4XS {
         // We now have in bits.valuse[0]: 0...15, 32...47, 64...79, 96...111
         //                bits.valuse[1]: 16..31, 48...63, 80...95, 112..127
         //                etc.
-        __m512i tmp = _mm512_permutex2var_epi64(values[0], q4bits.permute1, values[1]);
-        values[1] = _mm512_shuffle_epi8(iqk_values, _mm512_permutex2var_epi64(values[0], q4bits.permute2, values[1]));
+        __m512i tmp = _mm512_permutex2var_epi64(values[0], permute1, values[1]);
+        values[1] = _mm512_shuffle_epi8(iqk_values, _mm512_permutex2var_epi64(values[0], permute2, values[1]));
         values[0] = _mm512_shuffle_epi8(iqk_values, tmp);
-        tmp = _mm512_permutex2var_epi64(values[2], q4bits.permute1, values[3]);
-        values[3] = _mm512_shuffle_epi8(iqk_values, _mm512_permutex2var_epi64(values[2], q4bits.permute2, values[3]));
+        tmp = _mm512_permutex2var_epi64(values[2], permute1, values[3]);
+        values[3] = _mm512_shuffle_epi8(iqk_values, _mm512_permutex2var_epi64(values[2], permute2, values[3]));
         values[2] = _mm512_shuffle_epi8(iqk_values, tmp);
         //////
         // auto scales128 = siq4.make_scales(*(const uint32_t *)x[i].scales_l, x[i].scales_h);
@@ -1685,6 +1691,8 @@ struct DequantizerIQ4XS {
     //Q4Bits
     __m512i values[4];
     Q4BitsBlock q4bits;
+    const __m512i permute1 = _mm512_set_epi64(11, 10, 3, 2,  9,  8, 1, 0);
+    const __m512i permute2 = _mm512_set_epi64(15, 14, 7, 6, 13, 12, 5, 4);
     //ScaleIQ4XS
     const __m128i hshift = _mm_set_epi32(12, 8, 4, 0);
     const __m128i lshift = _mm_set_epi32(4, 0, 4, 0);
@@ -1733,8 +1741,9 @@ struct DequantizerIQ4KSS {
         __m128i m1 = _mm512_castsi512_si128(mask1);
         __m128i shifts = _mm_and_si128(_mm_cmpeq_epi16(_mm_and_si128(scales128, m1), m1), m4);
         scales128 = _mm_add_epi16(_mm_and_si128(scales128, mask), m127);
+        __m128i scales_s = _mm_mullo_epi16(scales128, _mm_add_epi16(m128, shifts));
         __m512i scales[4];
-        iqxks.process<nrc_y>(scales128, _mm_mullo_epi16(scales128, _mm_add_epi16(m128, shifts)), scales, q8, i, d, accm);
+        iqxks.process<nrc_y>(scales_s, scales128, scales, q8, i, d, accm);
         iqXk_compute_block<nrc_y>(i, d, q8, values, scales, accd);
     }
 
@@ -1761,15 +1770,15 @@ struct DequantizerIQ4KSS {
 struct IQXkScale {
     IQXkScale(uint8_t shift, int8_t min_val) : eshift(_mm256_set1_epi16(shift)), min(_mm256_set1_epi16(min_val)) {}
     template <int nrc_y>
-    inline void process(uint16_t extra, __m128i scales128, __m512i * scales, const block_q8_K **q8, int i, float d, __m256 * accm) const {
-        process<nrc_y>(extra, _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales128, scale_shuffle)), scales, q8, i, d, accm);
+    inline void process(int i, float d, uint16_t extra, __m128i scales8,  const block_q8_K **q8, __m256 * accm, __m512i * scales) const {
+        process<nrc_y>(i, d, extra, _mm256_cvtepi8_epi16(_mm_shuffle_epi8(scales8, scale_shuffle)), q8, accm, scales);
     }
     template <int nrc_y>
-    inline void process(uint16_t extra, __m256i scales256, __m512i * scales, const block_q8_K **q8, int i, float d, __m256 * accm) const {
-        __m256i scales_s = _mm256_mullo_epi16(scales256, _mm256_mask_add_epi16(min, extra, min, eshift));
+    inline void process(int i, float d, uint16_t extra, __m256i scales16, const block_q8_K **q8, __m256 * accm, __m512i * scales) const {
+        __m256i scales_s = _mm256_mullo_epi16(scales16, _mm256_mask_add_epi16(min, extra, min, eshift));
         iqk_process_mins_16<nrc_y>(scales_s, q8, i, d, accm);
-        __m256i aux_1 = _mm256_broadcastsi128_si256(_mm256_castsi256_si128(scales256));
-        __m256i aux_2 = _mm256_broadcastsi128_si256(_mm256_extracti128_si256(scales256, 1));
+        __m256i aux_1 = _mm256_broadcastsi128_si256(_mm256_castsi256_si128(scales16));
+        __m256i aux_2 = _mm256_broadcastsi128_si256(_mm256_extracti128_si256(scales16, 1));
         __m512i scales256_1 = _mm512_inserti32x8(_mm512_castsi256_si512(aux_1), aux_1, 1);
         __m512i scales256_2 = _mm512_inserti32x8(_mm512_castsi256_si512(aux_2), aux_2, 1);
         scales[0] = _mm512_shuffle_epi8(scales256_1, shuffles[0]);
@@ -1813,7 +1822,7 @@ struct DequantizerIQ3K {
         const __m128i sc_signs = _mm_cmpeq_epi8(_mm_and_si128(_mm_set1_epi16(x[i].scales_h), sign_mask), sign_mask);
         const __m128i sch = _mm_shuffle_epi8(_mm_or_si128(sc_signs, _mm_set1_epi8(1)), hshuff);
         __m512i scales[4];
-        iqxk.process<nrc_y>(x[i].extra, _mm_sign_epi8(scl, sch), scales, q8, i, d, accm);
+        iqxk.process<nrc_y>(i, d, x[i].extra, _mm_sign_epi8(scl, sch), q8, accm, scales);
         iqXk_compute_block<nrc_y>(i, d, q8, values, scales, accd);
     }
 
@@ -1844,11 +1853,11 @@ struct DequantizerIQ4K {
         // We now have in bits.valuse[0]: 0...15, 32...47, 64...79, 96...111
         //                bits.valuse[1]: 16..31, 48...63, 80...95, 112..127
         //                etc.
-        __m512i tmp = _mm512_permutex2var_epi64(values[0], q4bits.permute1, values[1]);
-        values[1] = _mm512_shuffle_epi8(iqk_values, _mm512_permutex2var_epi64(values[0], q4bits.permute2, values[1]));
+        __m512i tmp = _mm512_permutex2var_epi64(values[0], permute1, values[1]);
+        values[1] = _mm512_shuffle_epi8(iqk_values, _mm512_permutex2var_epi64(values[0], permute2, values[1]));
         values[0] = _mm512_shuffle_epi8(iqk_values, tmp);
-        tmp = _mm512_permutex2var_epi64(values[2], q4bits.permute1, values[3]);
-        values[3] = _mm512_shuffle_epi8(iqk_values, _mm512_permutex2var_epi64(values[2], q4bits.permute2, values[3]));
+        tmp = _mm512_permutex2var_epi64(values[2], permute1, values[3]);
+        values[3] = _mm512_shuffle_epi8(iqk_values, _mm512_permutex2var_epi64(values[2], permute2, values[3]));
         values[2] = _mm512_shuffle_epi8(iqk_values, tmp);
         // iqxk.process(i, d, x[i].extra, make_scales(x[i].scales_l, (const uint16_t *)x[i].scales_h), q8, accm, scales);
         uint64_t aux64; memcpy(&aux64, x[i].scales_l, 8);
@@ -1858,7 +1867,7 @@ struct DequantizerIQ4K {
         __m128i aux = _mm_and_si128(_mm_set_epi32(aux32 >> 2, aux32, aux32 << 2, aux32 << 4), maskh);
         __m128i sch = _mm_shuffle_epi8(aux, iqxk.scale_shuffle);
         __m512i scales[4];
-        iqxk.process<nrc_y>(x[i].extra, _mm_add_epi8(_mm_or_si128(scl, sch), m32), scales, q8, i, d, accm);
+        iqxk.process<nrc_y>(i, d, x[i].extra, _mm_add_epi8(_mm_or_si128(scl, sch), m32), q8, accm, scales);
         iqXk_compute_block<nrc_y>(i, d, q8, values, scales, accd);
     }
 
@@ -1868,6 +1877,8 @@ struct DequantizerIQ4K {
     //Q4Bits
     __m512i values[4];
     Q4BitsBlock q4bits;
+    const __m512i permute1 = _mm512_set_epi64(11, 10, 3, 2,  9,  8, 1, 0);
+    const __m512i permute2 = _mm512_set_epi64(15, 14, 7, 6, 13, 12, 5, 4);
 
     const __m256i iqk_val256 = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *)kvalues_iq4nl));
     const __m512i iqk_values = _mm512_inserti32x8(_mm512_castsi256_si512(iqk_val256), iqk_val256, 1);
@@ -1899,11 +1910,11 @@ struct DequantizerIQ5K {
         // We now have in bits.valuse[0]: 0...31, 64...95
         //                bits.valuse[1]: 32..63, 96..127
         //                etc.
-        __m512i tmp = _mm512_permutex2var_epi64(values[0], q4bits.permute1, values[1]);
-        values[1] = _mm512_permutex2var_epi64(values[0], q4bits.permute2, values[1]);
+        __m512i tmp = _mm512_permutex2var_epi64(values[0], permute1, values[1]);
+        values[1] = _mm512_permutex2var_epi64(values[0], permute2, values[1]);
         values[0] = tmp;
-        tmp = _mm512_permutex2var_epi64(values[2], q4bits.permute1, values[3]);
-        values[3] = _mm512_permutex2var_epi64(values[2], q4bits.permute2, values[3]);
+        tmp = _mm512_permutex2var_epi64(values[2], permute1, values[3]);
+        values[3] = _mm512_permutex2var_epi64(values[2], permute2, values[3]);
         values[2] = tmp;
         // iqxk.process(i, d, x[i].extra, make_scales(x[i].scales_l, (const uint16_t *)x[i].scales_h), q8, accm, scales);
         uint64_t aux64; memcpy(&aux64, x[i].scales_l, 8);
@@ -1913,7 +1924,7 @@ struct DequantizerIQ5K {
         __m128i aux = _mm_and_si128(_mm_set_epi32(aux32 >> 2, aux32, aux32 << 2, aux32 << 4), maskh);
         __m128i sch = _mm_shuffle_epi8(aux, iqxk.scale_shuffle);
         __m512i scales[4];
-        iqxk.process<nrc_y>(x[i].extra, _mm_add_epi8(_mm_or_si128(scl, sch), m32), scales, q8, i, d, accm);
+        iqxk.process<nrc_y>(i, d, x[i].extra, _mm_add_epi8(_mm_or_si128(scl, sch), m32), q8, accm, scales);
         iqXk_compute_block<nrc_y>(i, d, q8, values, scales, accd);
     }
 
@@ -1923,6 +1934,8 @@ struct DequantizerIQ5K {
     //Q4Bits
     __m512i values[4];
     Q4BitsBlock q4bits;
+    const __m512i permute1 = _mm512_set_epi64(11, 10,  9,  8, 3, 2, 1, 0);
+    const __m512i permute2 = _mm512_set_epi64(15, 14, 13, 12, 7, 6, 5, 4);
 
     const __m256i iqk_val256[2] = {
         _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *)kvalues_iq5nl + 0)),
@@ -1966,16 +1979,16 @@ struct DequantizerIQ6K {
         // We now have in bits.valuse[0]: 0...31, 64...95
         //                bits.valuse[1]: 32..63, 96..127
         //                etc.
-        __m512i tmp = _mm512_permutex2var_epi64(values[0], q4bits.permute1, values[1]);
-        values[1] = _mm512_permutex2var_epi64(values[0], q4bits.permute2, values[1]);
+        __m512i tmp = _mm512_permutex2var_epi64(values[0], permute1, values[1]);
+        values[1] = _mm512_permutex2var_epi64(values[0], permute2, values[1]);
         values[0] = tmp;
-        tmp = _mm512_permutex2var_epi64(values[2], q4bits.permute1, values[3]);
-        values[3] = _mm512_permutex2var_epi64(values[2], q4bits.permute2, values[3]);
+        tmp = _mm512_permutex2var_epi64(values[2], permute1, values[3]);
+        values[3] = _mm512_permutex2var_epi64(values[2], permute2, values[3]);
         values[2] = tmp;
         //auto scales8 = _mm_loadu_si128((const __m128i*)x[i].scales);
         //iqxk.process(i, d, x[i].extra, _mm256_cvtepi8_epi16(scales8), q8, accm, scales);
         __m512i scales[4];
-        iqxk.process<nrc_y>(x[i].extra, _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)x[i].scales)), scales, q8, i, d, accm);
+        iqxk.process<nrc_y>(i, d, x[i].extra, _mm256_cvtepi8_epi16(_mm_loadu_si128((const __m128i*)x[i].scales)), q8, accm, scales);
         iqXk_compute_block<nrc_y>(i, d, q8, values, scales, accd);
     }
 
@@ -1985,6 +1998,8 @@ struct DequantizerIQ6K {
     //Q4Bits
     __m512i values[4];
     Q4BitsBlock q4bits;
+    const __m512i permute1 = _mm512_set_epi64(11, 10,  9,  8, 3, 2, 1, 0);
+    const __m512i permute2 = _mm512_set_epi64(15, 14, 13, 12, 7, 6, 5, 4);
 
     const __m256i iqk_val256[4] = {
         _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *)kvalues_iq6nl + 0)),
