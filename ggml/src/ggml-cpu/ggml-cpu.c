@@ -1399,6 +1399,7 @@ void ggml_compute_forward_mul_mat(
     enum ggml_type const type = src0->type;
     enum ggml_type const vec_dot_type = (dst->flags & GGML_TENSOR_FLAG_IKQ) && (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q6_K)? GGML_TYPE_Q8_2_X4 : type_traits_cpu[type].vec_dot_type;
     ggml_from_float_t        const from_float           = type_traits_cpu[vec_dot_type].from_float;
+    // ggml_from_float_t const from_float = (dst->flags & GGML_TENSOR_FLAG_IKQ) && type == GGML_TYPE_IQ2_KS? quantize_row_q8_KS : type_traits_cpu[vec_dot_type].from_float;
     int64_t                  const vec_dot_num_rows     = type_traits_cpu[src0->type].nrows;
 
     GGML_ASSERT(ne0 == ne01);
