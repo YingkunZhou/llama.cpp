@@ -3029,6 +3029,17 @@ static void iqkX_mul_mat(int n, const void * vx, size_t bx, struct DataInfo* inf
     }
 }
 
+#define USE_ZYK 1
+
+#if USE_ZYK
+typedef struct {
+    uint8_t extra[128/8];
+    uint8_t scale_h[128/8];
+    uint8_t scale_l[128/2];
+    uint8_t qs[32][128/4];
+} block_iq2_ks_T;
+static_assert(sizeof(block_iq2_ks_T) == 1120, "wrong iq2_ks block size/padding");
+
 struct ZykIQ2KS {
     inline void new_row(const void * vx, size_t bx, int ix) {
         const ggml_half * dptr = (const ggml_half *)((const char *)vx + bx*ix);
@@ -3054,8 +3065,7 @@ struct ZykIQ2KS {
             }
             __m256i psum0 = _mm256_add_epi32(p[0], p[2]);
             __m256i psum1 = _mm256_add_epi32(p[1], p[3]);
-            if constexpr (j == 0) sumi[iy] = _mm256_add_epi32(psum0, psum1);
-            else sumi[iy] = _mm256_add_epi32(sumi[iy], _mm256_add_epi32(psum0, psum1));
+            sumi[iy] = _mm256_add_epi32(sumi[iy], _mm256_add_epi32(psum0, psum1));
         }
     }
     template <int nrc_y>
@@ -3065,7 +3075,7 @@ struct ZykIQ2KS {
         __m128i sch = _mm_set1_epi8(x[i].extra >> 8);
         sch = _mm_and_si128(_mm_cmpeq_epi8(_mm_and_si128(sch, hmask), _mm_setzero_si128()), _mm_set1_epi8(-16));
         scales = _mm_cvtepi8_epi16(_mm_add_epi8(scl, sch));
-        __m128i scales_s = _mm_mullo_epi16(scales,
+        __m256i mins = _mm256_cvtepi16_epi32(_mm_mullo_epi16(scales,
             _mm_cvtepi8_epi16(_mm_add_epi8(_mm_set1_epi8(-32),
                 _mm_and_si128(_mm_set1_epi8(5),
                     _mm_cmpeq_epi8(hmask,
@@ -3074,14 +3084,10 @@ struct ZykIQ2KS {
                     )
                 )
             ))
-        );
-        const __m256i mins = MM256_SET_M128I(_mm_shuffle_epi8(scales_s, s8kshuffles[1]), _mm_shuffle_epi8(scales_s, s8kshuffles[0]));
-        for (int iy = 0; iy < nrc_y; ++iy) {
-            const __m256i prod  = _mm256_madd_epi16(mins, _mm256_loadu_si256((const __m256i*)q8[iy][i].bsums));
-            accd[iy] = _mm256_fmadd_ps(_mm256_set1_ps(q8[iy][i].d), _mm256_cvtepi32_ps(prod), accd[iy]);
-        }
+        ));
 
         __m256i sumi[nrc_y];
+        for (int iy = 0; iy < nrc_y; ++iy) sumi[iy] = _mm256_mullo_epi32(mins, _mm256_loadu_si256((const __m256i*)q8[iy][i].bsums));
         iqk_q2bits_prepare(x[i].qs, 0, _mm256_set1_epi8(0x03), values);
         compute<nrc_y, 0>(i, q8, sumi);
         iqk_q2bits_prepare(x[i].qs, 1, _mm256_set1_epi8(0x03), values);
@@ -3122,6 +3128,7 @@ static void iq2ks_mul_mat(int n, const void * vx, size_t bx, struct DataInfo* in
         }
     }
 }
+#endif
 #endif
 
 static void iqk_prepare(int typeA, int typeB, int ne00) {
@@ -3187,8 +3194,11 @@ static void iqk_prepare(int typeA, int typeB, int ne00) {
         //iqk_quants
         case GGML_TYPE_IQ2_KS: {
             assert(typeB == GGML_TYPE_Q8_K);
-            // IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerIQ2KS);
+#if USE_ZYK
             IQK_SET_MUL_MAT_FUNCTIONS(iq2ks_mul_mat);
+#else
+            IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerIQ2KS);
+#endif
             return;
         }
         case GGML_TYPE_IQ2_K: {

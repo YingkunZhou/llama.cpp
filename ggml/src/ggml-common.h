@@ -335,9 +335,7 @@ typedef struct {
     float   d;              // delta
     float   sum;            // sum of quants in the entire block
     int8_t  qs[QK_K];       // quants
-    union{
     int16_t bsums[QK_K/16]; // sum of quants in groups of 16
-    int32_t sums32[QK_K/32];}; // sum of quants in groups of 32
 } block_q8_K;
 static_assert(sizeof(block_q8_K) == 2*sizeof(float) + QK_K + QK_K/16*sizeof(int16_t), "wrong q8_K block size/padding");
 
