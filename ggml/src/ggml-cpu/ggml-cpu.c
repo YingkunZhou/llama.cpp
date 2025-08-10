@@ -534,6 +534,9 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     [GGML_TYPE_IQ2_KS] = {
         .vec_dot_type             = GGML_TYPE_Q8_K,
     },
+    [GGML_TYPE_IQ2_KS_T] = {
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+    },
     [GGML_TYPE_IQ3_KS] = {
         .vec_dot_type             = GGML_TYPE_Q8_K,
     },
@@ -1455,7 +1458,7 @@ void ggml_compute_forward_mul_mat(
     enum ggml_type const type = src0->type;
     enum ggml_type const vec_dot_type = (dst->flags & GGML_TENSOR_FLAG_IKQ) && (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q6_K)? GGML_TYPE_Q8_2_X4 : type_traits_cpu[type].vec_dot_type;
 #if USE_ZYK
-    ggml_from_float_t const from_float = (dst->flags & GGML_TENSOR_FLAG_IKQ) && type == GGML_TYPE_IQ2_KS? quantize_row_q8_KS : type_traits_cpu[vec_dot_type].from_float;
+    ggml_from_float_t const from_float = (dst->flags & GGML_TENSOR_FLAG_IKQ) && (type == GGML_TYPE_IQ2_KS || type == GGML_TYPE_IQ2_KS_T)? quantize_row_q8_KS : type_traits_cpu[vec_dot_type].from_float;
 #else
     ggml_from_float_t        const from_float           = type_traits_cpu[vec_dot_type].from_float;
 #endif

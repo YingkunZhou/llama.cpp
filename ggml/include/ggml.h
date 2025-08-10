@@ -412,6 +412,7 @@ extern "C" {
         GGML_TYPE_IQ3_KS  = 156,
         GGML_TYPE_Q8_0_R8 = 208,
         GGML_TYPE_Q8_K_R8 = 399,
+        GGML_TYPE_IQ2_KS_T= 400,
         GGML_TYPE_COUNT,
     };
 

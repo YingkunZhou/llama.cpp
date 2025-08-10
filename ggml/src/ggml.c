@@ -904,6 +904,12 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = sizeof(block_iq2_ks),
         .is_quantized             = true,
     },
+    [GGML_TYPE_IQ2_KS_T] = {
+        .type_name                = "iq2_ks",
+        .blck_size                = QK_K,
+        .type_size                = sizeof(block_iq2_ks),
+        .is_quantized             = true,
+    },
     [GGML_TYPE_IQ3_KS] = {
         .type_name                = "iq3_ks",
         .blck_size                = QK_K,
@@ -1319,7 +1325,7 @@ size_t ggml_type_size(enum ggml_type type) {
 size_t ggml_row_size(enum ggml_type type, int64_t ne) {
     assert(ne % ggml_blck_size(type) == 0);
     size_t row_meta_size = 0;
-    if (type == GGML_TYPE_IQ2_KS || type == GGML_TYPE_IQ2_KS) {
+    if (type == GGML_TYPE_IQ2_KS || type == GGML_TYPE_IQ3_KS || type == GGML_TYPE_IQ2_KS_T) {
         row_meta_size = 2;
     }
     else if (type == GGML_TYPE_IQ4_KS  || type == GGML_TYPE_IQ5_KS ||
