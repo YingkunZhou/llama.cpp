@@ -9,7 +9,7 @@ extern "C" {
 __attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, long Ny, long ne00,
         int typeA, const void * A, long strideA,
         int typeB, const void * B, long strideB,
-        float * C, long stride_C, int ith, int nth);
+        float * C, long stride_C, int ith, int nth, void * params);
 
     // the compute plan that needs to be prepared for ggml_graph_compute()
     // since https://github.com/ggml-org/ggml/issues/287

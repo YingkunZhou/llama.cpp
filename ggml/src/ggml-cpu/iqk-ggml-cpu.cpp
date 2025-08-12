@@ -45,8 +45,6 @@ struct DataInfo {
     size_t        bs;
     size_t        by;
     int           cur_y;
-    int           ne11;
-    size_t        bs2;
 };
 
 static inline float iqk_hsum_float_4(__m128 x) {
@@ -3042,15 +3040,16 @@ typedef struct {
 static_assert(sizeof(block_iq2_ks_T) == QK_T/8+QK_T/8+QK_T/2+8*QK_T, "wrong iq2_ks block size/padding");
 
 struct ZykIQ2KS_T {
-    inline void new_row(const void * vx, size_t bx, int ix) {
-        dptr = (const ggml_half *)((const char *)vx + bx*ix);
+    inline void new_row(const void * vx, size_t bx) {
+        dptr = (const ggml_half *)((const char *)vx);
         x = (const block_iq2_ks_T *)(dptr+QK_T);
     }
     template <int nrc_y>
-    inline void compute(int i, int j, const block_q8_K ** q8, const __m256i * q2, const int * act_idx, __m256i * sumi) {
+    inline void compute(int i, int j, const block_q8_K ** q8, const __m256i * q2, __m256i * sumi) {
         // load q2bits wight
+        for (int loop = 0; loop < QK_T/128; ++loop) {
         __m256i q2bits[4];
-        for (int k = 0; k < 4; ++k) q2bits[k] = _mm256_loadu_si256(q2+act_idx[k]);
+        for (int k = 0; k < 4; ++k) q2bits[k] = _mm256_loadu_si256(q2+QK_T/128*act_idx[k]+loop);
 
         // prepare sy activation
         __m256i sy[nrc_y];
@@ -3065,8 +3064,8 @@ struct ZykIQ2KS_T {
             __m256i values[4];
 
             // apply shift and mask to extract 2-bit
-            for (int ix = 0; ix < 4; ++ix) {
-                values[ix] = _mm256_and_si256(_mm256_srli_epi16(q2bits[ix], shift*2), m3);
+            for (int k = 0; k < 4; ++k) {
+                values[k] = _mm256_and_si256(_mm256_srli_epi16(q2bits[k], shift*2), m3);
             }
 
             // unpack and transpose the values 4x128->128x4
@@ -3081,18 +3080,18 @@ struct ZykIQ2KS_T {
             values[3] = _mm256_shuffle_epi8(iqk_values, _mm256_unpackhi_epi8(hi02, hi13));
 
             // apply mat_mul
-            for (int ix = 0; ix < 4; ++ix) {
+            for (int k = 0; k < 4; ++k) {
                 for (int iy = 0; iy < nrc_y; ++iy) {
-                    int idx = nrc_y * (shift*4 + ix) + iy;
-                    sumi[idx] = _mm256_dpbusd_avx_epi32(sumi[idx], values[ix], sy[iy]);
+                    int idx = nrc_y * (16*loop + 4*shift + k) + iy;
+                    sumi[idx] = _mm256_dpbusd_avx_epi32(sumi[idx], values[k], sy[iy]);
                 }
             }
+        }
         }
     }
     template <int nrc_y>
     inline void compute_block(int i, const block_q8_K ** q8, __m256i * accm) {
         __m256i sumi[nrc_y*QK_T/8];
-        int active_idx[4];
         // Loop over sub blocks
         for (int j = 0; j < nsubs; ++j) {
             const block_iq2_ks_T * sb = x+nsubs*i+j;
@@ -3105,12 +3104,14 @@ struct ZykIQ2KS_T {
                     sumi[idx] = _mm256_mullo_epi32(_mm256_cvtepi8_epi32(mins), _mm256_set1_epi32(((const int32_t*)q8[iy][i].bsums)[j]));
                 }
             }
+
+            int base_j = QK_K/nsubs*j;
             for (int k = 0; k < QK_K/nsubs; k += 4) {
-                active_idx[0] = k;
-                active_idx[1] = k+1;
-                active_idx[2] = k+2;
-                active_idx[3] = k+3;
-                compute<nrc_y>(i, QK_K/nsubs*j, q8, (const __m256i *)sb->qs, active_idx, sumi);
+                act_idx[0] = k;
+                act_idx[1] = k+1;
+                act_idx[2] = k+2;
+                act_idx[3] = k+3;
+                compute<nrc_y>(i, base_j, q8, (const __m256i *)sb->qs, sumi);
             }
             for (int k = 0; k < QK_T/8; ++k) {
                 __m128i scales = _mm_and_si128(m16, _mm_cmpeq_epi8(m0, _mm_and_si128(hmask, _mm_set1_epi8(sb->scale_h[k]))));
@@ -3124,6 +3125,7 @@ struct ZykIQ2KS_T {
         }
     }
 
+    int act_idx[4];
     //BaseDequantizer
     const ggml_half * dptr;
     const block_iq2_ks_T * x;
@@ -3149,12 +3151,10 @@ static void iq2ks_t_mul_mat(int n, const void * vx, size_t bx, struct DataInfo* 
 
     ZykIQ2KS_T deq;
 
-    // Outer loop for x-index
-    for (int ix = 0; ix < nrc_x; ix += QK_T) {
         // Initialize accumulation vector to zero
         __m256 accd[nrc_y * QK_T / 8] = {};
         // Process the input
-        deq.new_row(vx, bx, ix);
+        deq.new_row(vx, bx);
         // Loop over super blocks
         for (int i = 0; i < nb; ++i) {
             __m256i accm[nrc_y * QK_T / 8] = {};
@@ -3169,16 +3169,13 @@ static void iq2ks_t_mul_mat(int n, const void * vx, size_t bx, struct DataInfo* 
         // Store the result
         for (int k = 0; k < QK_T; k += 8) {
             float d[8];
-            for (int i = 0; i < 8; i++) {
-                d[i] = GGML_CPU_FP16_TO_FP32(deq.dptr[k+i]);
-            }
+            for (int i = 0; i < 8; i++) d[i] = GGML_CPU_FP16_TO_FP32(deq.dptr[k+i]);
             for (int iy = 0; iy < nrc_y; ++iy) {
                 int idx = nrc_y * k/8 + iy;
-                _mm256_storeu_ps(info->s + (info->cur_y + iy)*info->bs + ix + k,
+                _mm256_storeu_ps(info->s + (info->cur_y + iy)*info->bs + k,
                 _mm256_mul_ps(accd[idx], *(const __m256*)d));
             }
         }
-    }
 }
 
 struct ZykIQ2KS {
@@ -4896,10 +4893,11 @@ static std::vector<char> & thread_local_work_buffer() {
     return f;
 }
 
+#include <atomic>
 extern "C" __attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, long Ny, long ne00,
         int typeA, const void * A, long strideA,
         int typeB, const void * B, long strideB,
-        float * C, long stride_C, int ith, int nth) {
+        float * C, long stride_C, int ith, int nth, void * params) {
 
     auto etypeA = ggml_type(typeA);
     if (auto dequant_type = iqk_is_dequant_better(etypeA, Ny); dequant_type != etypeA) {
@@ -4920,7 +4918,7 @@ extern "C" __attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, lo
 
         //printf("Dequant mul mat %s x %s: ne00 = %d, row_size = %d\n", ggml_type_name(dequant_type), ggml_type_name(ggml_type(typeB)), (int)ne00, (int)row_size_qx);
 
-        struct DataInfo info = {C + first_x, (const char *)B, (size_t)stride_C, row_size_qy, 0, 1, 0};
+        struct DataInfo info = {C + first_x, (const char *)B, (size_t)stride_C, row_size_qy, 0};
 
         auto& f = thread_local_work_buffer();
 
@@ -4945,10 +4943,30 @@ extern "C" __attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, lo
 
     int num_rows = iqk_num_rows(etypeA);
     GGML_ASSERT(Nx%num_rows == 0);
+    if (typeA == GGML_TYPE_IQ2_KS_T) {
+        assert(num_rows == QK_T);
+        std::atomic<int>* current_chunk_ptr = reinterpret_cast<std::atomic<int>*>(params);
+        if (ith == 0) {
+            // Every thread starts at ith, so the first unprocessed chunk is nth.  This save a bit of coordination right at the start.
+            current_chunk_ptr->store(nth, std::memory_order_relaxed);
+        }
+        if (nth != 1) {
+            #pragma omp barrier
+        }
+        // The first chunk comes from our thread_id, the rest will get auto-assigned.
+        int ix = ith;
+        while (ix < Nx/QK_T) {
+            struct DataInfo info = {C + QK_T*ix, (const char *)B, (size_t)stride_C, row_size_qy, 0};
+            iqk_mul_mat_NxM(ne00, (const char *)A+QK_T*ix*row_size_qx, row_size_qx, &info, 0, Ny);
+            ix = current_chunk_ptr->fetch_add(1, std::memory_order_relaxed);
+        }
+    }
+    else {
     int nrc_x = (Nx/num_rows + nth - 1)/nth;
     int first_x = ith*nrc_x;
     if (first_x + nrc_x > Nx/num_rows) nrc_x = Nx/num_rows - first_x;
 
-    struct DataInfo info = {C + first_x*num_rows, (const char *)B, (size_t)stride_C, row_size_qy, 0, 1, 0};
+    struct DataInfo info = {C + first_x*num_rows, (const char *)B, (size_t)stride_C, row_size_qy, 0};
     iqk_mul_mat_NxM(ne00, (const char *)A + row_size_qx*first_x*num_rows, row_size_qx, &info, nrc_x*num_rows, Ny);
+    }
 }

@@ -1506,7 +1506,7 @@ void ggml_compute_forward_mul_mat(
             ne01, ne11, ne00,
             src0->type, (const char *)src0->data, /*strideA*/ nb01,
             vec_dot_type, (const char *)params->wdata, /*strideB*/ ggml_row_size(vec_dot_type, ne10),
-            (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth);
+            (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth, &params->threadpool->current_chunk);
         return;
     }
 #if GGML_USE_LLAMAFILE
