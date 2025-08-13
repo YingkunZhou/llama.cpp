@@ -45,6 +45,7 @@ struct DataInfo {
     size_t        bs;
     size_t        by;
     int           cur_y;
+    int           nsplit;
 };
 
 static inline float iqk_hsum_float_4(__m128 x) {
@@ -3028,9 +3029,17 @@ static void iqkX_mul_mat(int n, const void * vx, size_t bx, struct DataInfo* inf
 }
 
 #define USE_ZYK 1
-#define QK_T 128
+#define QK_T 256
 
 #if USE_ZYK
+#include <atomic>
+
+constexpr size_t CACHE_LINE_SIZE = 64;
+struct AlignedAtomicInt {
+    alignas(CACHE_LINE_SIZE) std::atomic<int> flag;
+};
+AlignedAtomicInt DuoThreadReduce[8];
+
 typedef struct {
     uint8_t  extra[QK_T/8];
     uint8_t  scale_h[QK_T/8];
@@ -3141,13 +3150,15 @@ struct ZykIQ2KS_T {
     const __m256i iqk_values = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *)kvalues_iq2nl));
 };
 template <int nrc_y>
-static void iq2ks_t_mul_mat(int n, const void * vx, size_t bx, struct DataInfo* info, int nrc_x) {
-    assert(n % QK_K == 0);
-    const int nb = n / QK_K;
+static void iq2ks_t_mul_mat(int Nx, const void * vx, size_t bx, struct DataInfo* info, int ith) {
+    assert((bx-2) % sizeof(block_iq2_ks) == 0);
+    const int nb = bx / sizeof(block_iq2_ks) /info->nsplit;
+    int start = (ith % info->nsplit) * nb;
+    int end = start + nb;
 
     // Pre-fetching q8 pointers based on row indices
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy) * info->by);
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + iy * info->by);
 
     ZykIQ2KS_T deq;
 
@@ -3156,7 +3167,7 @@ static void iq2ks_t_mul_mat(int n, const void * vx, size_t bx, struct DataInfo* 
         // Process the input
         deq.new_row(vx, bx);
         // Loop over super blocks
-        for (int i = 0; i < nb; ++i) {
+        for (int i = start; i < end; ++i) {
             __m256i accm[nrc_y * QK_T / 8] = {};
             deq.compute_block<nrc_y>(i, q8, accm);
             for (int k = 0; k < QK_T / 8; ++k) {
@@ -3166,14 +3177,47 @@ static void iq2ks_t_mul_mat(int n, const void * vx, size_t bx, struct DataInfo* 
                 }
             }
         }
+
+        if (info->nsplit == 2) {
+            std::atomic<int>* flag = &DuoThreadReduce[ith/2].flag;
+            if (ith % 2) {
+                // the odd thread must wait for the even thread to finish
+                // the even thread will write flag with next ix
+                while (!flag->load(std::memory_order_acquire)) {}
+            }
+            else {
+                // the even thread must wait for the previous odd thread to finish
+                // the odd thread will clear the flag once obtain the ix
+                while (flag->load(std::memory_order_acquire)) {}
+            }
+        }
+
         // Store the result
-        for (int k = 0; k < QK_T; k += 8) {
-            float d[8];
-            for (int i = 0; i < 8; i++) d[i] = GGML_CPU_FP16_TO_FP32(deq.dptr[k+i]);
+        float d[QK_T];
+        for (int i = 0; i < QK_T; i++) d[i] = GGML_CPU_FP16_TO_FP32(deq.dptr[i]);
+
+        if (info->nsplit == 2 && ith % 2) {
             for (int iy = 0; iy < nrc_y; ++iy) {
-                int idx = nrc_y * k/8 + iy;
-                _mm256_storeu_ps(info->s + (info->cur_y + iy)*info->bs + k,
-                _mm256_mul_ps(accd[idx], *(const __m256*)d));
+                for (int k = 0; k < QK_T; k += 8) {
+                    float * addr = info->s + iy*info->bs + k;
+                    // this order to faster write back
+                    _mm256_storeu_ps(addr, _mm256_fmadd_ps(
+                        accd[nrc_y * k/8 + iy],
+                        *(const __m256*)(d+k),
+                        _mm256_loadu_ps(addr))
+                    );
+                }
+            }
+            return;
+        }
+
+        for (int iy = 0; iy < nrc_y; ++iy) {
+            for (int k = 0; k < QK_T; k += 8) {
+                float * addr = info->s + iy*info->bs + k;
+                _mm256_storeu_ps(addr, _mm256_mul_ps(
+                    accd[nrc_y * k/8 + iy],
+                    *(const __m256*)(d+k))
+                );
             }
         }
 }
@@ -4893,7 +4937,6 @@ static std::vector<char> & thread_local_work_buffer() {
     return f;
 }
 
-#include <atomic>
 extern "C" __attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, long Ny, long ne00,
         int typeA, const void * A, long strideA,
         int typeB, const void * B, long strideB,
@@ -4918,7 +4961,7 @@ extern "C" __attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, lo
 
         //printf("Dequant mul mat %s x %s: ne00 = %d, row_size = %d\n", ggml_type_name(dequant_type), ggml_type_name(ggml_type(typeB)), (int)ne00, (int)row_size_qx);
 
-        struct DataInfo info = {C + first_x, (const char *)B, (size_t)stride_C, row_size_qy, 0};
+        struct DataInfo info = {C + first_x, (const char *)B, (size_t)stride_C, row_size_qy, 0, 1};
 
         auto& f = thread_local_work_buffer();
 
@@ -4943,30 +4986,50 @@ extern "C" __attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, lo
 
     int num_rows = iqk_num_rows(etypeA);
     GGML_ASSERT(Nx%num_rows == 0);
+#if USE_ZYK
     if (typeA == GGML_TYPE_IQ2_KS_T) {
         assert(num_rows == QK_T);
+        int ngroups = Nx/QK_T;
+        // ATTENTION: here we recommand max(nth) == 16 because batch_size is only up to 4
+        assert(Ny <= 4);
+        assert(nth == 1 || (nth%2 == 0 && nth <= 16));
+        int nsplit = 1;
+        if (0 < ngroups%nth && ngroups%nth <= nth/2) nsplit = 2;
+        std::atomic<int>* flag = &DuoThreadReduce[ith/2].flag;
         std::atomic<int>* current_chunk_ptr = reinterpret_cast<std::atomic<int>*>(params);
         if (ith == 0) {
             // Every thread starts at ith, so the first unprocessed chunk is nth.  This save a bit of coordination right at the start.
-            current_chunk_ptr->store(nth, std::memory_order_relaxed);
+            current_chunk_ptr->store(nth/nsplit, std::memory_order_relaxed);
+        }
+        if (nsplit == 2 && ith%2 == 0) {
+            flag->store(0, std::memory_order_relaxed);
         }
         if (nth != 1) {
             #pragma omp barrier
         }
         // The first chunk comes from our thread_id, the rest will get auto-assigned.
-        int ix = ith;
-        while (ix < Nx/QK_T) {
-            struct DataInfo info = {C + QK_T*ix, (const char *)B, (size_t)stride_C, row_size_qy, 0};
-            iqk_mul_mat_NxM(ne00, (const char *)A+QK_T*ix*row_size_qx, row_size_qx, &info, 0, Ny);
-            ix = current_chunk_ptr->fetch_add(1, std::memory_order_relaxed);
+        int ix = ith/nsplit;
+        while (ix < ngroups) {
+            struct DataInfo info = {C + QK_T*ix, (const char *)B, (size_t)stride_C, row_size_qy, 0, nsplit};
+            iqk_mul_mat_NxM(Nx, (const char *)A+row_size_qx*QK_T*ix, row_size_qx, &info, ith, Ny);
+            if (ith % nsplit) {
+                ix = flag->exchange(0, std::memory_order_acq_rel);
+            }
+            else {
+                ix = current_chunk_ptr->fetch_add(1, std::memory_order_relaxed);
+                if (nsplit == 2) {
+                    flag->store(ix, std::memory_order_release);
+                }
+            }
         }
-    }
-    else {
+    } else
+#endif
+    {
     int nrc_x = (Nx/num_rows + nth - 1)/nth;
     int first_x = ith*nrc_x;
     if (first_x + nrc_x > Nx/num_rows) nrc_x = Nx/num_rows - first_x;
 
-    struct DataInfo info = {C + first_x*num_rows, (const char *)B, (size_t)stride_C, row_size_qy, 0};
+    struct DataInfo info = {C + first_x*num_rows, (const char *)B, (size_t)stride_C, row_size_qy, 0, 1};
     iqk_mul_mat_NxM(ne00, (const char *)A + row_size_qx*first_x*num_rows, row_size_qx, &info, nrc_x*num_rows, Ny);
     }
 }
