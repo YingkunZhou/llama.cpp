@@ -2971,6 +2971,15 @@ struct ZykIQ2KS_T {
             }
 
             // unpack and transpose the values 4x128->128x4
+            /* avx256:
+                b0b32b64b96 |b1b33b65b97 |b2b34b66b98 |b3b35b67b99 |<3*4B>|| //128bit
+                b4b36b68b100|b5b37b69b101|b6b38b70b102|b7b39b71b103|<3*4B>|| //128bit
+               avx512:
+                b0b64b128b192|b1...|b2...|b3...|<3*4B>|| //128bit
+                b4b68b132b196|b5...|b6...|b7...|<3*4B>|| //128bit
+                b8b72b136b200|b9...|b10..|b11..|<3*4B>|| //128bit
+                b12b76b140b204|b13.|b14..|b15..|<3*4B>|| //128bit
+            */
             MM_LENI lo02 = MM_UNPACKLO(values[0], values[2]);
             MM_LENI hi02 = MM_UNPACKHI(values[0], values[2]);
             MM_LENI lo13 = MM_UNPACKLO(values[1], values[3]);
@@ -3039,13 +3048,17 @@ struct ZykIQ2KS_T {
     const block_iq2_ks_T * x;
     //
 #ifdef HAVE_FANCY_SIMD
+    // unpack 16*4bit B0B8|B1B9|B2B10|B3B11||B4B12|B5B13|B6B14|B7B15
     const __m128i shift = _mm_set_epi32(4, 4, 0, 0);
+    // unpack 16*1bit b0b2b4b6b8b10b12b14|b1b3b5b7b9b11b13b15
     const __m128i hmask = _mm_set_epi8( // to avoid stupid warning about 0x80 overflowing
         -128, -128, 0x40, 0x40, 0x20, 0x20, 0x10, 0x10, 0x08, 0x08, 0x04, 0x04, 0x02, 0x02, 0x01, 0x01);
     const __m512i m3  = _mm512_set1_epi8(0x03);
     const __m512i iqk_values = _mm512_broadcast_i32x4(_mm_loadu_si128((const __m128i *)kvalues_iq2nl));
 #else
+    // unpack 8*4bit B0B4|B1B5|B2B6|B3B7
     const __m128i shift = _mm_set_epi32(0, 0, 4, 0);
+    // unpack 8*1bit b0b1b2b3b4b5b6b7
     const __m128i hmask = _mm_cvtsi64_si128(0x8040201008040201);
     const __m256i m3  = _mm256_set1_epi8(0x03);
     const __m256i iqk_values = _mm256_broadcastsi128_si256(_mm_loadu_si128((const __m128i *)kvalues_iq2nl));
