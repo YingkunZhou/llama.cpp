@@ -925,7 +925,7 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
     [GGML_TYPE_IQ5_KS] = {
         .type_name                = "iq5_ks",
         .blck_size                = QK_K,
-        .type_size                = sizeof(block_iq2_ks),
+        .type_size                = sizeof(block_iq5_ks),
         .is_quantized             = true,
     },
     [GGML_TYPE_IQ4_KSS] = {
