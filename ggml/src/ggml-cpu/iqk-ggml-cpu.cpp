@@ -2855,7 +2855,7 @@ AlignedAtomicInt DuoThreadReduce[8];
 #define QK_T 256
 #define NSUBS 8
 
-#define USE_FULL_TRANS 0
+#define USE_FULL_TRANS 1
 typedef struct {
     uint8_t  extra[QK_T/8];
     uint8_t  scale_h[QK_T/8];
@@ -2942,16 +2942,17 @@ struct ZykIQ2KS_T {
     }
     template <int nrc_y>
     inline void compute(int i, int j, const block_q8_K ** q8, const MM_LENI * q2, MM_LENI * sumi) {
-        int simd_regs = QK_T/N2B;
-        for (int sr = 0; sr < simd_regs; ++sr) {
-        MM_LENI q2bits[4];
+        constexpr int simd_regs = QK_T/N2B;
 #if USE_FULL_TRANS
         int stride = Nx;
 #else
         int stride = simd_regs;
 #endif
+        MM_LENI q2bits[4][simd_regs];
         // load q2bits wight
-        for (int k = 0; k < 4; ++k) q2bits[k] = MM_LOADI(q2+stride*act_idx[k]+sr);
+        for (int k = 0; k < 4; ++k)
+            for (int sr = 0; sr < simd_regs; ++sr)
+                q2bits[k][sr] = MM_LOADI(q2+stride*act_idx[k]+sr);
 
         // prepare sy activation
         MM_LENI sy[nrc_y];
@@ -2961,13 +2962,14 @@ struct ZykIQ2KS_T {
             sy[iy] = MM_SET1I32(q8qs[act_idx[0]] | (q8qs[act_idx[1]] << 8) | (q8qs[act_idx[2]] << 16) | (q8qs[act_idx[3]] << 24));
         }
 
+        for (int sr = 0; sr < simd_regs; ++sr) {
         // deal with 4 shift cases
         for (int shift = 0; shift < 4; ++shift) {
             MM_LENI values[4];
 
             // apply shift and mask to extract 2-bit
             for (int k = 0; k < 4; ++k) {
-                values[k] = MM_AND(MM_SRLI(q2bits[k], shift*2), m3);
+                values[k] = MM_AND(MM_SRLI(q2bits[k][sr], shift*2), m3);
             }
 
             // unpack and transpose the values 4x128->128x4
