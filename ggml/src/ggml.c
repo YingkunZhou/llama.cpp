@@ -1301,7 +1301,7 @@ size_t ggml_nbytes(const struct ggml_tensor * tensor) {
         }
     }
     else {
-        nbytes = tensor->ne[0]*tensor->nb[0]/blck_size;
+        nbytes = tensor->nb[1];
         for (int i = 1; i < GGML_MAX_DIMS; ++i) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
         }
@@ -1472,7 +1472,7 @@ static bool ggml_is_contiguous_n(const struct ggml_tensor * tensor, int n) {
     if (tensor->ne[0] != ggml_blck_size(tensor->type) && tensor->nb[0] != next_nb) {
         return false;
     }
-    next_nb *= tensor->ne[0]/ggml_blck_size(tensor->type);
+    next_nb = ggml_row_size(tensor->type, tensor->ne[0]);
     for (int i = 1; i < GGML_MAX_DIMS; i++) {
         if (tensor->ne[i] != 1) {
             if (i > n) {
@@ -1799,7 +1799,7 @@ static struct ggml_tensor * ggml_new_tensor_impl(
     }
 
     result->nb[0] = ggml_type_size(type);
-    result->nb[1] = ggml_row_size(type, result->ne[0]);
+    result->nb[1] = ggml_row_size(type, ne[0]);
     for (int i = 2; i < GGML_MAX_DIMS; i++) {
         result->nb[i] = result->nb[i - 1]*result->ne[i - 1];
     }

@@ -2948,7 +2948,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq2_ks * bxi = (const block_iq2_ks *)(x + sizeof(half)) + kbx0 + i*stride;
+        const block_iq2_ks * bxi = (const block_iq2_ks *)(x + i*stride + sizeof(half)) + kbx0;
 
         uint16_t extra = bxi->extra >> 4*(kqsx/8);
         int q2 = get_int_b2(bxi->qs, kqsx);
@@ -2975,7 +2975,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
         }
 
         const half * dptr = (const half *)(x + i*stride);
-        const float d = dptr[0];
+        const float d = __half2float(dptr[0]);
         const block_iq2_ks * bxi = (const block_iq2_ks *)(dptr + 1) + kbx0;
         const int ls1 = ((bxi->scales[threadIdx.x % 4] >> 0) & 0xf) | ((bxi->extra >> (4 + 2*(threadIdx.x % 4))) & 0x10);
         const int ls2 = ((bxi->scales[threadIdx.x % 4] >> 4) & 0xf) | ((bxi->extra >> (5 + 2*(threadIdx.x % 4))) & 0x10);
@@ -3021,7 +3021,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const half * dptr = (const half *)((const block_iq3_ks *)x + i*stride);
+        const half * dptr = (const half *)(x + i*stride);
         const float d = __half2float(dptr[0]);
         const block_iq3_ks * bxi = (const block_iq3_ks *)(dptr + 1) + kbx0;
 
@@ -3097,7 +3097,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const float * dptr = (const float *)((const block_iq4_ks *)x + i*stride);
+        const float * dptr = (const float *)(x + i*stride);
         const block_iq4_ks * bxi = (const block_iq4_ks *)(dptr + 1) + kbx0;
         const int ls = (bxi->scales[kqsx] & 254) - 127;
 
@@ -3158,7 +3158,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const float * dptr = (const float *)((const block_iq5_ks *)x + i*stride);
+        const float * dptr = (const float *)(x + i*stride);
         const float d = dptr[0];
         const block_iq5_ks * bxi = (const block_iq5_ks *)(dptr + 1) + kbx0;
 
@@ -3436,6 +3436,31 @@ struct mmq_type_traits<mmq_x, mmq_y, nwarps, need_check, GGML_TYPE_IQ4_KT> {
     static constexpr vec_dot_mmq_t    vec_dot_dp4a = vec_dot_q8_0_q8_1_dp4a<mmq_x, mmq_y, nwarps>;
 };
 
+template<ggml_type T> struct TypeInfo {};
+
+template<>
+struct TypeInfo<GGML_TYPE_IQ2_KS> {
+    static constexpr size_t block_size = sizeof(block_iq2_ks);
+    static constexpr size_t float_size = sizeof(half);
+};
+
+template<>
+struct TypeInfo<GGML_TYPE_IQ3_KS> {
+    static constexpr size_t block_size = sizeof(block_iq3_ks);
+    static constexpr size_t float_size = sizeof(half);
+};
+
+template<>
+struct TypeInfo<GGML_TYPE_IQ4_KS> {
+    static constexpr size_t block_size = sizeof(block_iq4_ks);
+    static constexpr size_t float_size = sizeof(float);
+};
+
+template<>
+struct TypeInfo<GGML_TYPE_IQ5_KS> {
+    static constexpr size_t block_size = sizeof(block_iq5_ks);
+    static constexpr size_t float_size = sizeof(float);
+};
 template <ggml_type type, int mmq_x, int nwarps, bool need_check, bool fixup>
 static __device__ __forceinline__ void mul_mat_q_process_tile(
         const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
@@ -3464,6 +3489,12 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
     float sum[mmq_x*mmq_y / (nwarps*WARP_SIZE)] = {0.0f};
 
     for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
+        if constexpr (type == GGML_TYPE_IQ2_KS || type == GGML_TYPE_IQ3_KS ||
+                      type == GGML_TYPE_IQ4_KS || type == GGML_TYPE_IQ5_KS) {
+            const int iqks_stride = stride_row_x * TypeInfo<type>::block_size + TypeInfo<type>::float_size;
+            load_tiles(x + iqks_stride*(offset_x/stride_row_x), tile_x, kb0, tile_x_max_i, iqks_stride);
+        }
+        else
         load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
 
         {
