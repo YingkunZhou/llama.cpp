@@ -615,7 +615,7 @@ extern "C" {
         GGML_TENSOR_FLAG_OUTPUT =  2, // ...is an output for the GGML compute graph
         GGML_TENSOR_FLAG_PARAM  =  4, // ...contains trainable parameters
         GGML_TENSOR_FLAG_LOSS   =  8, // ...defines loss for numerical optimization (multiple loss tensors add up)
-        GGML_TENSOR_FLAG_IKQ    = 16,
+        GGML_TENSOR_FLAG_IKQ    = 16, // ...determine to use iqk_mul_mat kernel ported from ik_llama.cpp
     };
 
     struct ggml_init_params {
