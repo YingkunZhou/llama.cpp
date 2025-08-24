@@ -3483,7 +3483,9 @@ static inline enum ggml_type iqk_is_dequant_better(enum ggml_type type, int nrc_
 static inline int iqk_num_rows(enum ggml_type type) {
 #ifdef HAVE_FANCY_SIMD
     switch (type) {
+#if USE_ZYK
         case GGML_TYPE_IQ2_KS_T: return QK_T;
+#endif
         case GGML_TYPE_Q8_1:
         case GGML_TYPE_Q8_K_R8: return 8;
         case GGML_TYPE_Q8_0_R8: return 16;
@@ -3491,7 +3493,9 @@ static inline int iqk_num_rows(enum ggml_type type) {
     }
 #else
     switch (type) {
+#if USE_ZYK
         case GGML_TYPE_IQ2_KS_T: return QK_T;
+#endif
         case GGML_TYPE_Q8_0_R8:
         case GGML_TYPE_Q8_1:
         case GGML_TYPE_Q8_K_R8: return 8;
