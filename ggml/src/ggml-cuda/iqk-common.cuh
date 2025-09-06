@@ -93,6 +93,13 @@ struct ggml_cuda_type_traits<GGML_TYPE_IQ6_K> {
     static constexpr int qi = QI6_XS;
 };
 
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_IQ2_KL> {
+    static constexpr int qk = QK_K;
+    static constexpr int qr = QR4_XS;
+    static constexpr int qi = QI4_XS;
+};
+
 static const __device__ int8_t iq2nl_values[8] = {
      -31, -13, 1, 17,   -26, -8, 6, 22
 };
