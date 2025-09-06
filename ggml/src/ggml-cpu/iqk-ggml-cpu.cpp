@@ -3274,25 +3274,25 @@ static void iq2ks_mul_mat(int n, const void * vx, size_t bx, struct DataInfo * i
 }
 #endif // USE_ZYK
 
-static void iqk_prepare(int typeA, int typeB, int ne00) {
+static bool iqk_prepare(int typeA, int typeB, int ne00) {
     assert(ne00%QK_K == 0);
     func16 = nullptr;
     switch (typeA) {
         case GGML_TYPE_Q8_1:
             assert(typeB == GGML_TYPE_Q8_2_X4);
             IQK_SET_MUL_MAT_FUNCTIONS(q8_1_r8_mul_mat);
-            return;
+            return true;
         case GGML_TYPE_Q8_0_R8:
             assert(typeB == GGML_TYPE_Q8_2_X4);
             IQK_SET_MUL_MAT_FUNCTIONS(q8_0_r8_mul_mat);
-            return;
+            return true;
         case GGML_TYPE_Q8_K_R8:
             assert(typeB == GGML_TYPE_Q8_K);
             IQK_SET_MUL_MAT_FUNCTIONS(q8k_r8_mul_mat);
 #ifdef HAVE_FANCY_SIMD
             func16 = q8k_r8_mul_mat<16>;
 #endif
-            return;
+            return true;
         //kquants
         case GGML_TYPE_Q2_K: {
             assert(typeB == GGML_TYPE_Q8_K);
@@ -3300,7 +3300,7 @@ static void iqk_prepare(int typeA, int typeB, int ne00) {
 #ifdef HAVE_FANCY_SIMD
             funcs[0] = qXk_mul_vec<DequantizerQ2K>;
 #endif
-            return;
+            return true;
         }
         case GGML_TYPE_Q3_K: {
             assert(typeB == GGML_TYPE_Q8_K);
@@ -3309,30 +3309,30 @@ static void iqk_prepare(int typeA, int typeB, int ne00) {
 #ifdef HAVE_FANCY_SIMD
             funcs[0] = qXk_mul_vec<DequantizerQ3K>;
 #endif
-            return;
+            return true;
         }
         case GGML_TYPE_Q4_K: {
             assert(typeB == GGML_TYPE_Q8_2_X4);
             // IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerQ4K);
             IQK_SET_MUL_MAT_FUNCTIONS_T(q45k_mul_mat_X4, DequantizerQ4K_AVX2);
-            return;
+            return true;
         }
         case GGML_TYPE_Q5_K: {
             assert(typeB == GGML_TYPE_Q8_2_X4);
             // IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerQ5K);
             IQK_SET_MUL_MAT_FUNCTIONS_T(q45k_mul_mat_X4, DequantizerQ5K_AVX2);
-            return;
+            return true;
         }
         case GGML_TYPE_Q6_K: {
             assert(typeB == GGML_TYPE_Q8_2_X4);
             // IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerQ6K);
             IQK_SET_MUL_MAT_FUNCTIONS_T(q36k_mul_mat_X4, DequantizerQ6K_AVX2);
-            return;
+            return true;
         }
         case GGML_TYPE_IQ4_XS: {
             assert(typeB == GGML_TYPE_Q8_K);
             IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerIQ4XS);
-            return;
+            return true;
         }
         //iqk_quants
         case GGML_TYPE_IQ2_KS: {
@@ -3342,7 +3342,7 @@ static void iqk_prepare(int typeA, int typeB, int ne00) {
 #else
             IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerIQ2KS);
 #endif
-            return;
+            return true;
         }
         case GGML_TYPE_IQ2_K: {
             assert(typeB == GGML_TYPE_Q8_K);
@@ -3350,47 +3350,47 @@ static void iqk_prepare(int typeA, int typeB, int ne00) {
 #ifdef HAVE_FANCY_SIMD
             funcs[0] = qXk_mul_vec<DequantizerIQ2K>;
 #endif
-            return;
+            return true;
         }
         case GGML_TYPE_IQ3_KS: {
             assert(typeB == GGML_TYPE_Q8_K);
             IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerIQ3KS);
-            return;
+            return true;
         }
         case GGML_TYPE_IQ3_K: {
             assert(typeB == GGML_TYPE_Q8_K);
             IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerIQ3K);
-            return;
+            return true;
         }
         case GGML_TYPE_IQ4_KSS: {
             assert(typeB == GGML_TYPE_Q8_K);
             IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerIQ4KSS);
-            return;
+            return true;
         }
         case GGML_TYPE_IQ4_KS: {
             assert(typeB == GGML_TYPE_Q8_K);
             IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerIQ4KS);
-            return;
+            return true;
         }
         case GGML_TYPE_IQ4_K: {
             assert(typeB == GGML_TYPE_Q8_K);
             IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerIQ4K);
-            return;
+            return true;
         }
         case GGML_TYPE_IQ5_KS: {
             assert(typeB == GGML_TYPE_Q8_K);
             IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerIQ5KS);
-            return;
+            return true;
         }
         case GGML_TYPE_IQ5_K: {
             assert(typeB == GGML_TYPE_Q8_K);
             IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerIQ5K);
-            return;
+            return true;
         }
         case GGML_TYPE_IQ6_K: {
             assert(typeB == GGML_TYPE_Q8_K);
             IQK_SET_MUL_MAT_FUNCTIONS_T(iqkX_mul_mat, DequantizerIQ6K);
-            return;
+            return true;
         }
         // ktquants assert(typeB == GGML_TYPE_Q8_2_X4)
         case GGML_TYPE_IQ2_KT: {
@@ -3399,7 +3399,7 @@ static void iqk_prepare(int typeA, int typeB, int ne00) {
 #ifdef HAVE_FANCY_SIMD
             func16 = iq2kt_mul_mat<16>;
 #endif
-            return;
+            return true;
         }
         case GGML_TYPE_IQ3_KT: {
             assert(typeB == GGML_TYPE_Q8_2_X4);
@@ -3407,7 +3407,7 @@ static void iqk_prepare(int typeA, int typeB, int ne00) {
 #ifdef HAVE_FANCY_SIMD
             func16 = iq3kt_mul_mat<16>;
 #endif
-            return;
+            return true;
         }
         case GGML_TYPE_IQ4_KT: {
             assert(typeB == GGML_TYPE_Q8_2_X4);
@@ -3415,17 +3415,17 @@ static void iqk_prepare(int typeA, int typeB, int ne00) {
 #ifdef HAVE_FANCY_SIMD
             func16 = iq4kt_mul_mat<16>;
 #endif
-            return;
+            return true;
         }
 #if USE_ZYK
         case GGML_TYPE_IQ2_KS_T: {
             assert(typeB == GGML_TYPE_Q8_K);
             IQK_SET_MUL_MAT_FUNCTIONS(iq2ks_t_mul_mat);
-            return;
+            return true;
         }
 #endif
         default:
-            GGML_ABORT("Fatal error");
+            return false;
     }
     GGML_UNUSED(typeB);
     GGML_UNUSED(ne00);
@@ -4904,7 +4904,7 @@ static std::vector<char> & thread_local_work_buffer() {
     return f;
 }
 
-extern "C" __attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, long Ny, long ne00,
+extern "C" __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, long Ny, long ne00,
         int typeA, const void * A, long strideA,
         int typeB, const void * B, long strideB,
         float * C, long stride_C, int ith, int nth,
@@ -4912,7 +4912,7 @@ extern "C" __attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, lo
 
     auto etypeA = ggml_type(typeA);
     if (auto dequant_type = iqk_is_dequant_better(etypeA, Ny); dequant_type != etypeA) {
-        iqk_prepare(dequant_type, typeB, ne00);
+        if (!iqk_prepare(dequant_type, typeB, ne00)) return false;
 
         const int k_x_step = 32;
 
@@ -4943,10 +4943,10 @@ extern "C" __attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, lo
             }
             iqk_mul_mat_NxM(ne00, f.data(), row_size_qx, &this_info, this_nrc_x, Ny);
         }
-        return;
+        return true;
     }
 
-    iqk_prepare(typeA, typeB, ne00);
+    if (!iqk_prepare(typeA, typeB, ne00)) return false;
 
     size_t row_size_qx = strideA; //*ggml_type_size(ggml_type(typeA));
     size_t row_size_qy = strideB; //*ggml_type_size(ggml_type(typeB));
@@ -4990,7 +4990,7 @@ extern "C" __attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, lo
                 }
             }
         }
-        return;
+        return true;
     }
 #endif
     int nrc_x = (Nx/num_rows + nth - 1)/nth;
@@ -4999,4 +4999,5 @@ extern "C" __attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, lo
 
     struct DataInfo info = {C + first_x*num_rows, (const char *)B, (size_t)stride_C, row_size_qy, 0, 1, 0, NULL};
     iqk_mul_mat_NxM(ne00, (const char *)A + row_size_qx*first_x*num_rows, row_size_qx, &info, nrc_x*num_rows, Ny);
+    return true;
 }

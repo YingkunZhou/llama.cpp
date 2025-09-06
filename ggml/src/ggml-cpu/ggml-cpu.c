@@ -1522,12 +1522,12 @@ void ggml_compute_forward_mul_mat(
         assert(dst->type == GGML_TYPE_F32);
         //FIXME: at most two dimensions
         assert(ne12 == 1 && ne13 == 1 && ne02 == 1 && ne03 == 1);
-        iqk_mul_mat(
+        if (iqk_mul_mat(
             ne01, ne11, ne00,
             src0->type, (const char *)src0->data, /*strideA*/ nb01,
             vec_dot_type, (const char *)params->wdata, /*strideB*/ ggml_row_size(vec_dot_type, ne10),
             (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth,
-            &params->threadpool->current_chunk, (const uint8_t *)params->act_idx);
+            &params->threadpool->current_chunk, (const uint8_t *)params->act_idx))
         return;
     }
 #if GGML_USE_LLAMAFILE

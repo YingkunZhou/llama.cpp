@@ -8,7 +8,7 @@ extern "C" {
 #endif
 #define USE_ZYK 1
 
-__attribute__ ((visibility ("default"))) void iqk_mul_mat(long Nx, long Ny, long ne00,
+__attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, long Ny, long ne00,
         int typeA, const void * A, long strideA,
         int typeB, const void * B, long strideB,
         float * C, long stride_C, int ith, int nth,
