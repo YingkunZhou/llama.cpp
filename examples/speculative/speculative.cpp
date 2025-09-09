@@ -646,7 +646,7 @@ int main(int argc, char ** argv) {
     return 0;
 }
 #else
-#define USE_FASTER_DRAFT 0
+#define USE_FASTER_DRAFT 1
 struct seq_draft {
     std::vector<llama_token> tokens;
     struct common_sampler * smpl = nullptr;
@@ -722,11 +722,9 @@ int main(int argc, char ** argv) {
     // prepare target model initial batch
     llama_batch batch_tgt = llama_batch_init(llama_n_batch(ctx_tgt), 0, 1);
     batch_tgt.n_tokens = n_draft + 1;
-    set_batch(batch_tgt, 0, token_id, n_input);
     // prepare draft model initial batch
     llama_batch batch_dft = llama_batch_init(llama_n_batch(ctx_dft), 0, 1);
     batch_dft.n_tokens = 1;
-    set_batch(batch_dft, 0, token_id, n_input);
     // initial several counter
     int n_predict = 0;
     int n_drafted = 0;
@@ -739,14 +737,20 @@ int main(int argc, char ** argv) {
         common_sampler_free(draft.smpl);
         draft.smpl = common_sampler_clone(smpl);
         draft.tokens.clear();
-        LOG_DBG("n_token = %d\n", n_token);
+        LOG_DBG("\nn_token = %d\n", n_token);
         llama_memory_seq_rm(mem_tgt, 0, n_token, -1);
         llama_memory_seq_rm(mem_dft, 0, n_token, -1);
+        set_batch(batch_tgt, 0, token_id, n_token);
+        n_drafted += n_draft;
         for (int i = 1; i <= n_draft; ++i) {
             // evaluate the drafted tokens on the draft model
             // add the token to the batch for batched decoding with the draft model
+            set_batch(batch_dft, batch_dft.n_tokens - 1, token_id, n_token + i - 1);
             llama_decode(ctx_dft, batch_dft);
-            common_sampler_sample(draft.smpl, ctx_dft, 0, true);
+            common_sampler_sample(draft.smpl, ctx_dft, batch_dft.n_tokens - 1, true);
+#if USE_FASTER_DRAFT
+            batch_dft.n_tokens = 1;
+#endif
             const auto * cur_p = common_sampler_get_candidates(draft.smpl);
             GGML_ASSERT(cur_p->size == 1);
             LOG_DBG(" - draft candidate %3d, pos %3d: %6d (%8.3f) '%s'\n", 0, i, cur_p->data[0].id, cur_p->data[0].p, common_token_to_piece(ctx_dft, cur_p->data[0].id).c_str());
@@ -755,12 +759,7 @@ int main(int argc, char ** argv) {
             common_sampler_accept(draft.smpl, token_id, true);
             draft.tokens.push_back(token_id);
             set_batch(batch_tgt, i, token_id, n_token + i);
-            set_batch(batch_dft, 0, token_id, n_token + i);
-#if USE_FASTER_DRAFT
-            batch_dft.n_tokens = 1;
-#endif
         }
-        n_drafted += n_draft;
         llama_decode(ctx_tgt, batch_tgt);
         ++n_token;
         // print current draft sequences
@@ -790,29 +789,25 @@ int main(int argc, char ** argv) {
                     ++i_dft;
                 }
                 else {
-                    set_batch(batch_dft, 0, token_id, n_token);
                     LOG("%s", token_str.c_str());
-                    LOG_DBG("\nthe sampled target token (%d, '%s') did not match %dth draft token %d\n", token_id, token_str.c_str(), i_dft, tokens[i_dft]);
+                    LOG_DBG("\nthe sampled target token (%d, '%s') did not match %dth draft token %d", token_id, token_str.c_str(), i_dft, tokens[i_dft]);
                     break;
                 }
             }
             else {
                 set_batch(batch_dft, 0, tokens.back(), n_token - 1);
 #if USE_FASTER_DRAFT
-                set_batch(batch_dft, 1, token_id, n_token);
                 batch_dft.n_tokens = 2;
 #else
                 llama_decode(ctx_dft, batch_dft);
-                set_batch(batch_dft, 0, token_id, n_token);
 #endif
                 LOG("%s", token_str.c_str());
-                LOG_DBG("\nthe sampled target token (%d, '%s') ran out of drafted tokens\n", token_id, token_str.c_str());
+                LOG_DBG("\nthe sampled target token (%d, '%s') ran out of drafted tokens", token_id, token_str.c_str());
                 break;
             }
         }
         // check if at end of generation
         if (n_predict > params.n_predict || has_eos) break;
-        set_batch(batch_tgt, 0, token_id, n_token);
     }
     auto t_dec_end = ggml_time_us();
 ////////////////////////////////////////////
