@@ -3097,7 +3097,7 @@ static void iq2ks_t_mul_mat(int Nx, const void * vx, size_t bx, struct DataInfo*
 
     // Pre-fetching q8 pointers based on row indices
     const block_q8_K * q8[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + iy * info->by);
+    for (int iy = 0; iy < nrc_y; ++iy) q8[iy] = (const block_q8_K *)(info->cy + (info->cur_y + iy)*info->by);
 
     ZykIQ2KS_T deq(Nx, ix);
 
@@ -3138,7 +3138,7 @@ static void iq2ks_t_mul_mat(int Nx, const void * vx, size_t bx, struct DataInfo*
         if (info->nsplit == 2 && info->ith % 2) {
             for (int iy = 0; iy < nrc_y; ++iy) {
                 for (int k = 0; k < QK_T; k += N32B) {
-                    float * addr = info->s + iy*info->bs + k;
+                    float * addr = info->s + (info->cur_y + iy)*info->bs + k;
                     // this order to faster write back
                     MM_STORE(addr, MM_FMADD(accd[nrc_y * k/N32B + iy], *(const MM_LEN*)(d+k), MM_LOADF(addr)));
                 }
@@ -3148,7 +3148,7 @@ static void iq2ks_t_mul_mat(int Nx, const void * vx, size_t bx, struct DataInfo*
 
         for (int iy = 0; iy < nrc_y; ++iy) {
             for (int k = 0; k < QK_T; k += N32B) {
-                float * addr = info->s + iy*info->bs + k;
+                float * addr = info->s + (info->cur_y + iy)*info->bs + k;
                 MM_STORE(addr, MM_MULF32(accd[nrc_y * k/N32B + iy], *(const MM_LEN*)(d+k)));
             }
         }
@@ -3178,7 +3178,7 @@ struct ZykIQ2KS {
         __m512i scales512 = _mm512_broadcast_i32x4(scales);
         for (int k = 0; k < 4; ++k) all_scales[k] = _mm512_shuffle_epi8(scales512, shuffles[k]);
         for (int iy = 0; iy < nrc_y; ++iy) {
-            __m512i sumi = _mm512_zextsi256_si512(_mm256_mullo_epi32(mins, _mm256_loadu_si256((const __m256i*)q8[iy][i].bsums)));
+            __m512i sumi = _mm512_zextsi256_si512(_mm256_madd_epi16(mins, _mm256_loadu_si256((const __m256i*)q8[iy][i].bsums)));
             for (int k = 0; k < 4; ++k) {
                 sumi = _mm512_dpwssd_epi32(sumi, all_scales[k], _mm512_maddubs_epi16(values[k], _mm512_loadu_si512((const __m512i*)q8[iy][i].qs + k)));
             }
@@ -3206,7 +3206,7 @@ struct ZykIQ2KS {
         __m128i sch = _mm_set1_epi8(x[i].extra >> 8);
         sch = _mm_and_si128(_mm_set1_epi8(-16), _mm_cmpeq_epi8(_mm_setzero_si128(), _mm_and_si128(sch, hmask)));
         scales = _mm_cvtepi8_epi16(_mm_add_epi8(scl, sch));
-        mins = _mm256_cvtepi16_epi32(_mm_mullo_epi16(scales,
+        __m128i scales_s = _mm_mullo_epi16(scales,
             _mm_cvtepi8_epi16(_mm_add_epi8(_mm_set1_epi8(-32),
                 _mm_and_si128(_mm_set1_epi8(5),
                     _mm_cmpeq_epi8(hmask,
@@ -3215,13 +3215,14 @@ struct ZykIQ2KS {
                     )
                 )
             ))
-        ));
+        );
+        mins = MM256_SET_M128I(_mm_shuffle_epi8(scales_s, s8kshuffles[1]), _mm_shuffle_epi8(scales_s, s8kshuffles[0]));
 #ifdef HAVE_FANCY_SIMD
         iqk_q2bits_prepare(x[i].qs, values);
         compute<nrc_y>(i, q8, accd);
 #else
         __m256i sumi[nrc_y];
-        for (int iy = 0; iy < nrc_y; ++iy) sumi[iy] = _mm256_mullo_epi32(mins, _mm256_loadu_si256((const __m256i*)q8[iy][i].bsums));
+        for (int iy = 0; iy < nrc_y; ++iy) sumi[iy] = _mm256_madd_epi16(mins, _mm256_loadu_si256((const __m256i*)q8[iy][i].bsums));
         iqk_q2bits_prepare(x[i].qs, 0, values);
         compute<nrc_y, 0>(i, q8, sumi);
         iqk_q2bits_prepare(x[i].qs, 1, values);
@@ -3239,6 +3240,10 @@ struct ZykIQ2KS {
     const __m128i hmask = _mm_cvtsi64_si128(0x8040201008040201);
     //7,3,6,2,5,1,4,0
     const __m128i shuffle = _mm_cvtsi64_si128(0x0703060205010400);
+    //Scales8KBase
+    const __m128i s8kshuffles[2] = {
+        _mm_set_epi32(0x07060706, 0x05040504, 0x03020302, 0x01000100),
+        _mm_set_epi32(0x0f0e0f0e, 0x0d0c0d0c, 0x0b0a0b0a, 0x09080908)};
 #ifdef HAVE_FANCY_SIMD
     __m512i values[4];
     const __m512i iqk_values = _mm512_broadcast_i32x4(_mm_loadu_si128((const __m128i *)kvalues_iq2nl));
@@ -4856,6 +4861,7 @@ static inline void iqk_mul_mat_NxM(int n, const void * vx, size_t bx, struct Dat
         if (info->cur_y == nrc_y) return;
     }
     int ny = funcs.size();
+    while (!funcs[ny-1] && ny > 0) --ny;
     int n_left = nrc_y - info->cur_y;
     int n_step = n_left/ny;
     if (n_step > 0) {
@@ -4891,6 +4897,23 @@ static inline void iqk_mul_mat_NxM(int n, const void * vx, size_t bx, struct Dat
                 }
             }
             info->cur_y += ny * n_step;
+        }
+    }
+    n_left = nrc_y - info->cur_y;
+    if (n_left > 0) {
+        funcs[n_left-1](n, vx, bx, info, nrc_x);
+    }
+}
+
+static inline void iq2ks_t_mul_mat_NxM(int n, const void * vx, size_t bx, struct DataInfo * info, int nrc_x, int nrc_y) {
+    // int ny = funcs.size();
+    // while (!funcs[ny-1] && ny > 0) --ny;
+    int n_left = nrc_y - info->cur_y;
+    int n_step = n_left/8;
+    if (n_step > 0) {
+        for (int iy = 0; iy < n_step; ++iy) {
+            funcs[8-1](n, vx, bx, info, nrc_x);
+            info->cur_y += 8;
         }
     }
     n_left = nrc_y - info->cur_y;
@@ -4958,8 +4981,7 @@ extern "C" __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, lo
     if (typeA == GGML_TYPE_IQ2_KS_T) {
         assert(num_rows == QK_T);
         int ngroups = Nx/QK_T;
-        // ATTENTION: here we recommand max(nth) == 16 because batch_size is only up to 4
-        assert(Ny <= 4);
+        // ATTENTION: here we recommand max(nth) == 16 because batch_size is only up to 8
         assert(nth == 1 || (nth%2 == 0 && nth <= 16));
         int nsplit = 1;
         if (0 < ngroups%nth && ngroups%nth <= nth/2) nsplit = 2;
@@ -4979,7 +5001,7 @@ extern "C" __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, lo
         int ix = ith/nsplit;
         while (ix < ngroups) {
             struct DataInfo info = {C + QK_T*ix, (const char *)B, (size_t)stride_C, row_size_qy, 0, nsplit, ith, act_idx};
-            iqk_mul_mat_NxM(Nx, (const char *)A, row_size_qx, &info, QK_T*ix, Ny);
+            iq2ks_t_mul_mat_NxM(Nx, (const char *)A, row_size_qx, &info, QK_T*ix, Ny);
             if (ith % nsplit) {
                 ix = flag->exchange(0, std::memory_order_acq_rel);
             }

@@ -17499,6 +17499,51 @@ void llama_model_free(llama_model * model) {
     delete model;
 }
 
+void llama_model_append_res(const llama_model * model, const llama_model * model_res) {
+    if (!model_res) return;
+    // FIXME: currently, we mainly consider GPT structure, especially non-MoE, and only 2D-weight-tensor
+    model->output->residual = model_res->output;
+    for (size_t il = 0; il < model->layers.size(); ++il) {
+        // attention
+        if (model->layers[il].wq)        model->layers[il].wq->residual        = model_res->layers[il].wq;
+        if (model->layers[il].wk)        model->layers[il].wk->residual        = model_res->layers[il].wk;
+        if (model->layers[il].wv)        model->layers[il].wv->residual        = model_res->layers[il].wv;
+        if (model->layers[il].wo)        model->layers[il].wo->residual        = model_res->layers[il].wo;
+        if (model->layers[il].wqkv)      model->layers[il].wqkv->residual      = model_res->layers[il].wqkv;
+        if (model->layers[il].wq_a)      model->layers[il].wq_a->residual      = model_res->layers[il].wq_a;
+        if (model->layers[il].wq_b)      model->layers[il].wq_b->residual      = model_res->layers[il].wq_b;
+        if (model->layers[il].wkv_a_mqa) model->layers[il].wkv_a_mqa->residual = model_res->layers[il].wkv_a_mqa;
+        if (model->layers[il].wkv_b)     model->layers[il].wkv_b->residual     = model_res->layers[il].wkv_b;
+        if (model->layers[il].wk_b)      model->layers[il].wk_b->residual      = model_res->layers[il].wk_b;
+        if (model->layers[il].wv_b)      model->layers[il].wv_b->residual      = model_res->layers[il].wv_b;
+        if (model->layers[il].wq_cross)  model->layers[il].wq_cross->residual  = model_res->layers[il].wq_cross;
+        if (model->layers[il].wk_cross)  model->layers[il].wk_cross->residual  = model_res->layers[il].wk_cross;
+        if (model->layers[il].wv_cross)  model->layers[il].wv_cross->residual  = model_res->layers[il].wv_cross;
+        if (model->layers[il].wo_cross)  model->layers[il].wo_cross->residual  = model_res->layers[il].wo_cross;
+        if (model->layers[il].wq_enc)    model->layers[il].wq_enc->residual    = model_res->layers[il].wq_enc;
+        if (model->layers[il].wk_enc)    model->layers[il].wk_enc->residual    = model_res->layers[il].wk_enc;
+        if (model->layers[il].wv_enc)    model->layers[il].wv_enc->residual    = model_res->layers[il].wv_enc;
+        if (model->layers[il].wo_enc)    model->layers[il].wo_enc->residual    = model_res->layers[il].wo_enc;
+        // ff
+        if (model->layers[il].ffn_gate)    model->layers[il].ffn_gate->residual    = model_res->layers[il].ffn_gate;
+        if (model->layers[il].ffn_down)    model->layers[il].ffn_down->residual    = model_res->layers[il].ffn_down;
+        if (model->layers[il].ffn_up)      model->layers[il].ffn_up->residual      = model_res->layers[il].ffn_up;
+        if (model->layers[il].ffn_gate_enc)model->layers[il].ffn_gate_enc->residual= model_res->layers[il].ffn_gate_enc;
+        if (model->layers[il].ffn_down_enc)model->layers[il].ffn_down_enc->residual= model_res->layers[il].ffn_down_enc;
+        if (model->layers[il].ffn_up_enc)  model->layers[il].ffn_up_enc->residual  = model_res->layers[il].ffn_up_enc;
+        // ff MoE
+        if (model->layers[il].ffn_gate_inp) model->layers[il].ffn_gate_inp->residual = model_res->layers[il].ffn_gate_inp;
+        if (model->layers[il].ffn_gate_exps)model->layers[il].ffn_gate_exps->residual= model_res->layers[il].ffn_gate_exps;
+        if (model->layers[il].ffn_down_exps)model->layers[il].ffn_down_exps->residual= model_res->layers[il].ffn_down_exps;
+        if (model->layers[il].ffn_up_exps)  model->layers[il].ffn_up_exps->residual  = model_res->layers[il].ffn_up_exps;
+        // ff shared expert (shexp)
+        if (model->layers[il].ffn_gate_inp_shexp)model->layers[il].ffn_gate_inp_shexp->residual= model_res->layers[il].ffn_gate_inp_shexp;
+        if (model->layers[il].ffn_gate_shexp)    model->layers[il].ffn_gate_shexp->residual    = model_res->layers[il].ffn_gate_shexp;
+        if (model->layers[il].ffn_down_shexp)    model->layers[il].ffn_down_shexp->residual    = model_res->layers[il].ffn_down_shexp;
+        if (model->layers[il].ffn_up_shexp)      model->layers[il].ffn_up_shexp->residual      = model_res->layers[il].ffn_up_shexp;
+    }
+}
+
 int32_t llama_model_n_ctx_train(const llama_model * model) {
     return model->hparams.n_ctx_train;
 }

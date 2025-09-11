@@ -352,6 +352,7 @@ extern "C" {
         bool kv_unified;  // use a unified buffer across the input sequences when computing the attention
                           // try to disable when n_seq_max > 1 for improved performance when the sequences do not share a large prefix
                           // ref: https://github.com/ggml-org/llama.cpp/pull/14363
+        bool use_res;
     };
 
     // model quantization parameters
@@ -486,6 +487,7 @@ extern "C" {
     LLAMA_API const struct llama_vocab * llama_model_get_vocab(const struct llama_model * model);
     LLAMA_API enum llama_rope_type       llama_model_rope_type(const struct llama_model * model);
 
+    LLAMA_API void    llama_model_append_res (const struct llama_model * model, const struct llama_model * model_res);
     LLAMA_API int32_t llama_model_n_ctx_train(const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_embd     (const struct llama_model * model);
     LLAMA_API int32_t llama_model_n_layer    (const struct llama_model * model);
@@ -918,6 +920,9 @@ extern "C" {
             struct llama_context * ctx,
               struct llama_batch   batch);
 
+    LLAMA_API void llama_set_use_res(
+            struct llama_context * ctx,
+              bool use_res);
     // Process a batch of tokens.
     // Requires the context to have a memory.
     // For encode-decoder contexts, processes the batch using the decoder.

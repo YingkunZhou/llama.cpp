@@ -66,6 +66,7 @@ struct llama_context {
 
     void detach_threadpool();
 
+    void set_use_res(bool use_res);
     void set_n_threads(int32_t n_threads, int32_t n_threads_batch);
 
     void set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data);
@@ -277,6 +278,7 @@ private:
     ggml_backend_buffer_ptr buf_output;
 
     bool has_evaluated_once = false;
+    bool use_res;
 
     // perf
     mutable int64_t t_start_us  = 0;

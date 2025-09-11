@@ -917,6 +917,7 @@ struct common_init_result common_init_from_params(common_params & params) {
         LOG_ERR("%s: failed to load model '%s'\n", __func__, params.model.path.c_str());
         return iparams;
     }
+    llama_model_append_res(model, params.model_res);
 
     const llama_vocab * vocab = llama_model_get_vocab(model);
 
@@ -1173,6 +1174,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.op_offload        = !params.no_op_offload;
     cparams.swa_full          = params.swa_full;
     cparams.kv_unified        = params.kv_unified;
+    cparams.use_res           = params.model_res != NULL;
 
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;

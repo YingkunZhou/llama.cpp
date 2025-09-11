@@ -22,6 +22,8 @@ __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, long Ny, long
         uint8_t * work_data; // work buffer, to be allocated by caller before calling to `ggml_graph_compute()`
         size_t    act_size; // size of parsity activation index buffer, calculated by `ggml_graph_plan()`
         uint8_t * act_idx; // sparsity activation index buffer, to be allocated by caller before calling to `ggml_graph_compute()`
+        size_t    out_size;
+        float   * out_data;
 
         int n_threads;
         struct ggml_threadpool * threadpool;

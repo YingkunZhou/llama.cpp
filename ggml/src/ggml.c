@@ -1795,7 +1795,7 @@ static struct ggml_tensor * ggml_new_tensor_impl(
         /*.data         =*/ obj_alloc_size > 0 ? (void *)(result + 1) : data,
         /*.name         =*/ { 0 },
         /*.extra        =*/ NULL,
-        /*.padding      =*/ { 0 },
+        /*.residual     =*/ NULL,
     };
 
     // TODO: this should not be needed as long as we don't rely on aligned SIMD loads
@@ -6939,6 +6939,11 @@ void ggml_set_loss(struct ggml_tensor * tensor) {
 void ggml_set_ikquant(struct ggml_tensor * tensor) {
     GGML_ASSERT(tensor->op == GGML_OP_MUL_MAT);
     tensor->flags |= GGML_TENSOR_FLAG_IKQ;
+}
+
+void ggml_set_residual(struct ggml_tensor * tensor) {
+    GGML_ASSERT(tensor->op == GGML_OP_MUL_MAT);
+    tensor->flags |= GGML_TENSOR_FLAG_RES;
 }
 ////////////////////////////////////////////////////////////////////////////////
 

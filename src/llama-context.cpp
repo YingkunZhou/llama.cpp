@@ -102,6 +102,7 @@ llama_context::llama_context(
 
     cparams.op_offload = params.op_offload;
     cparams.kv_unified = params.kv_unified;
+    cparams.use_res    = params.use_res;
 
     {
         const char * LLAMA_SET_ROWS = getenv("LLAMA_SET_ROWS");
@@ -621,6 +622,10 @@ void llama_context::set_n_threads(int32_t n_threads, int32_t n_threads_batch) {
 
     cparams.n_threads       = n_threads;
     cparams.n_threads_batch = n_threads_batch;
+}
+
+void llama_context::set_use_res(bool use_res) {
+    cparams.use_res = use_res;
 }
 
 void llama_context::set_abort_callback(bool (*abort_callback)(void * data), void * abort_callback_data) {
@@ -2225,6 +2230,7 @@ llama_context_params llama_context_default_params() {
         /*.op_offload                  =*/ true,
         /*.swa_full                    =*/ true,
         /*.kv_unified                  =*/ false,
+        /*.use_res                     =*/ false,
     };
 
     return result;
@@ -2805,6 +2811,10 @@ int32_t llama_encode(
     }
 
     return ret;
+}
+
+void llama_set_use_res(llama_context * ctx, bool use_res) {
+    ctx->set_use_res(use_res);
 }
 
 int32_t llama_decode(

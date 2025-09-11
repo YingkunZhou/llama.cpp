@@ -1527,8 +1527,23 @@ void ggml_compute_forward_mul_mat(
             src0->type, (const char *)src0->data, /*strideA*/ nb01,
             vec_dot_type, (const char *)params->wdata, /*strideB*/ ggml_row_size(vec_dot_type, ne10),
             (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth,
-            &params->threadpool->current_chunk, (const uint8_t *)params->act_idx))
-        return;
+            &params->threadpool->current_chunk, NULL))
+        {
+            if (dst->flags & GGML_TENSOR_FLAG_RES) {
+                struct ggml_tensor * residual = src0->residual;
+                enum ggml_type const res_type = residual->type;
+                enum ggml_type const res_dot_type = (res_type == GGML_TYPE_Q4_K || res_type == GGML_TYPE_Q5_K || res_type == GGML_TYPE_Q6_K)? GGML_TYPE_Q8_2_X4 : type_traits_cpu[res_type].vec_dot_type;
+                assert(res_dot_type == vec_dot_type);
+                iqk_mul_mat(
+                    ne01, ne11, ne00,
+                    residual->type, (const char *)residual->data, /*strideA*/ residual->nb[1],
+                    vec_dot_type, (const char *)params->wdata, /*strideB*/ ggml_row_size(vec_dot_type, ne10),
+                    params->out_data, /*stride_C*/ nb1/sizeof(float), ith, nth,
+                    &params->threadpool->current_chunk, (const uint8_t *)params->act_idx);
+            }
+            return;
+        }
+
     }
 #if GGML_USE_LLAMAFILE
     // broadcast factors
@@ -2947,6 +2962,7 @@ struct ggml_cplan ggml_graph_plan(
 
     size_t work_size = 0;
     size_t act_size  = 0;
+    size_t out_size  = 0;
 
     struct ggml_cplan cplan;
     memset(&cplan, 0, sizeof(struct ggml_cplan));
@@ -2963,6 +2979,7 @@ struct ggml_cplan ggml_graph_plan(
 
         size_t cur = 0;
         size_t act_cur = 0;
+        size_t out_cur = 0;
 
         if (!ggml_cpu_extra_work_size(n_threads, node, &cur)) {
             switch (node->op) {
@@ -3000,6 +3017,10 @@ struct ggml_cplan ggml_graph_plan(
                         if (node->src[1]->type != vec_dot_type) {
                             cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));
                             act_cur = 8 + node->src[1]->ne[0]*(1+32)/32; // 1 cnt per 32 elements
+                            assert(node->src[0]->ne[0] == node->src[1]->ne[0]);
+                            if (node->flags & GGML_TENSOR_FLAG_RES) {
+                                out_cur = node->src[0]->ne[1] * node->src[1]->ne[1];
+                            }
                         }
                     } break;
                 case GGML_OP_MUL_MAT_ID:
@@ -3115,6 +3136,7 @@ struct ggml_cplan ggml_graph_plan(
 
         work_size = MAX(work_size, cur);
         act_size  = MAX(act_size, act_cur);
+        out_size  = MAX(out_size, out_cur);
     }
 
     if (work_size > 0) {
@@ -3123,12 +3145,18 @@ struct ggml_cplan ggml_graph_plan(
     if (act_size > 0) {
         act_size += CACHE_LINE_SIZE*(n_threads); // but why?
     }
+    if (out_size > 0) {
+        out_size += CACHE_LINE_SIZE*(n_threads);
+    }
 
     cplan.threadpool = threadpool;
     cplan.n_threads  = MIN(max_tasks, n_threads);
     cplan.work_size  = work_size;
     cplan.act_size   = act_size;
+    cplan.out_size   = out_size;
     cplan.work_data  = NULL;
+    cplan.act_idx    = NULL;
+    cplan.out_data   = NULL;
 
     return cplan;
 }
@@ -3148,6 +3176,8 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         /*.wsize     =*/ cplan->work_size,
         /*.wdata     =*/ cplan->work_data,
         /*.act_idx   =*/ cplan->act_idx,
+        /*.out_size  =*/ cplan->out_size,
+        /*.out_data  =*/ cplan->out_data,
         /*.threadpool=*/ tp,
     };
 
@@ -3164,6 +3194,11 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
         if (node_n + 1 < cgraph->n_nodes) {
             ggml_barrier(state->threadpool);
+        }
+        if (node->flags & GGML_TENSOR_FLAG_RES) {
+            float * res_data = (float *)node->data;
+            int64_t size = node->src[0]->ne[1] * node->src[1]->ne[1];
+            for (int64_t i = 0; i < size; ++i) res_data[i] = res_data[i] + cplan->out_data[i];
         }
     }
 
@@ -3396,6 +3431,8 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
     GGML_ASSERT(cplan);
     GGML_ASSERT(cplan->n_threads > 0);
     GGML_ASSERT(cplan->work_size == 0 || cplan->work_data != NULL);
+    GGML_ASSERT(cplan->act_size  == 0 || cplan->act_idx   != NULL);
+    GGML_ASSERT(cplan->out_size  == 0 || cplan->out_data  != NULL);
 
     int n_threads                               = cplan->n_threads;
     struct ggml_threadpool * threadpool = cplan->threadpool;
