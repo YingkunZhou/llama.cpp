@@ -740,7 +740,7 @@ int main(int argc, char ** argv) {
             set_batch(batch_tgt, i, token_id, n_token + i);
         }
         // print current draft sequences
-        LOG_DBG("draft: %s\n", string_from(ctx_dft, batch_tgt).c_str());
+        LOG_DBG("\ndraft: %s\n", string_from(ctx_dft, batch_tgt).c_str());
 
         llama_memory_seq_rm(mem_dft, 0, n_token, -1);
         llama_set_use_res(ctx_dft, true);
@@ -763,20 +763,20 @@ int main(int argc, char ** argv) {
             ++n_predict;
             if (i_dft < n_draft) {
                 if (token_id == tokens[i_dft]) {
-                    LOG("\u001b[%dm%s\u001b[37m", 36, token_str.c_str());
+                    if (!has_eos) LOG("\u001b[%dm%s\u001b[37m", 36, token_str.c_str());
                     LOG_DBG("\nthe sampled target token matches the %dth drafted token (%d, '%s') - accepted\n", i_dft, token_id, token_str.c_str());
                     ++n_accept;
                     ++n_token;
                     ++i_dft;
                 }
                 else {
-                    LOG("%s", token_str.c_str());
+                    if (!has_eos) LOG("%s", token_str.c_str());
                     LOG_DBG("\nthe sampled target token (%d, '%s') did not match %dth draft token %d", token_id, token_str.c_str(), i_dft, tokens[i_dft]);
                     break;
                 }
             }
             else {
-                LOG("%s", token_str.c_str());
+                if (!has_eos) LOG("%s", token_str.c_str());
                 LOG_DBG("\nthe sampled target token (%d, '%s') ran out of drafted tokens", token_id, token_str.c_str());
                 break;
             }
@@ -905,7 +905,7 @@ int main(int argc, char ** argv) {
             set_batch(batch_tgt, i, token_id, n_token + i);
         }
         // print current draft sequences
-        LOG_DBG("draft: %s\n", string_from(ctx_dft, batch_tgt).c_str());
+        LOG_DBG("\ndraft: %s\n", string_from(ctx_dft, batch_tgt).c_str());
         llama_decode(ctx_tgt, batch_tgt);
         ++n_token;
         // used to determine end of generation
@@ -925,14 +925,14 @@ int main(int argc, char ** argv) {
             ++n_predict;
             if (i_dft < n_draft) {
                 if (token_id == tokens[i_dft]) {
-                    LOG("\u001b[%dm%s\u001b[37m", 36, token_str.c_str());
+                    if (!has_eos) LOG("\u001b[%dm%s\u001b[37m", 36, token_str.c_str());
                     LOG_DBG("\nthe sampled target token matches the %dth drafted token (%d, '%s') - accepted\n", i_dft, token_id, token_str.c_str());
                     ++n_accept;
                     ++n_token;
                     ++i_dft;
                 }
                 else {
-                    LOG("%s", token_str.c_str());
+                    if (!has_eos) LOG("%s", token_str.c_str());
                     LOG_DBG("\nthe sampled target token (%d, '%s') did not match %dth draft token %d", token_id, token_str.c_str(), i_dft, tokens[i_dft]);
                     break;
                 }
@@ -944,7 +944,7 @@ int main(int argc, char ** argv) {
 #else
                 llama_decode(ctx_dft, batch_dft);
 #endif
-                LOG("%s", token_str.c_str());
+                if (!has_eos) LOG("%s", token_str.c_str());
                 LOG_DBG("\nthe sampled target token (%d, '%s') ran out of drafted tokens", token_id, token_str.c_str());
                 break;
             }

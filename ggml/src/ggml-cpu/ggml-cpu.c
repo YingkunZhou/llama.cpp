@@ -1527,9 +1527,10 @@ void ggml_compute_forward_mul_mat(
             src0->type, (const char *)src0->data, /*strideA*/ nb01,
             vec_dot_type, (const char *)params->wdata, /*strideB*/ ggml_row_size(vec_dot_type, ne10),
             (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth,
-            &params->threadpool->current_chunk, NULL))
+            &params->threadpool->current_chunk, (const uint8_t *)params->act_idx))
         {
             if (dst->flags & GGML_TENSOR_FLAG_RES) {
+                ggml_barrier(params->threadpool);
                 struct ggml_tensor * residual = src0->residual;
                 enum ggml_type const res_type = residual->type;
                 enum ggml_type const res_dot_type = (res_type == GGML_TYPE_Q4_K || res_type == GGML_TYPE_Q5_K || res_type == GGML_TYPE_Q6_K)? GGML_TYPE_Q8_2_X4 : type_traits_cpu[res_type].vec_dot_type;
@@ -1540,6 +1541,16 @@ void ggml_compute_forward_mul_mat(
                     vec_dot_type, (const char *)params->wdata, /*strideB*/ ggml_row_size(vec_dot_type, ne10),
                     params->out_data, /*stride_C*/ nb1/sizeof(float), ith, nth,
                     &params->threadpool->current_chunk, (const uint8_t *)params->act_idx);
+
+                ggml_barrier(params->threadpool);
+
+                int64_t size = ne01 * ne11;
+                assert(size % nth == 0);
+                int nrc_dst = size / nth;
+                int first_dst = ith * nrc_dst;
+                float * const dst_data = (float *)dst->data + first_dst;
+                const float * out_data = params->out_data + first_dst;
+                for (int i = 0; i < nrc_dst; ++i) dst_data[i] = dst_data[i] + out_data[i];
             }
             return;
         }
@@ -3194,11 +3205,6 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
 
         if (node_n + 1 < cgraph->n_nodes) {
             ggml_barrier(state->threadpool);
-        }
-        if (node->flags & GGML_TENSOR_FLAG_RES) {
-            float * res_data = (float *)node->data;
-            int64_t size = node->src[0]->ne[1] * node->src[1]->ne[1];
-            for (int64_t i = 0; i < size; ++i) res_data[i] = res_data[i] + cplan->out_data[i];
         }
     }
 

@@ -588,12 +588,14 @@ std::string string_from(const struct llama_context * ctx, const struct llama_bat
 
         auto detokenized = common_token_to_piece(ctx, batch.token[i]);
 
+#if 0
         detokenized.erase(
                 std::remove_if(
                     detokenized.begin(),
                     detokenized.end(),
                     [](const unsigned char c) { return !std::isprint(c); }),
                 detokenized.end());
+#endif
 
         buf << "\n"          << std::to_string(i)
             << ", token '"   << detokenized << "'"
