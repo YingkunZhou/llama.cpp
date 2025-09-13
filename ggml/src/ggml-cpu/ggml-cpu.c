@@ -1525,35 +1525,10 @@ void ggml_compute_forward_mul_mat(
         if (iqk_mul_mat(
             ne01, ne11, ne00,
             src0->type, (const char *)src0->data, /*strideA*/ nb01,
-            vec_dot_type, (const char *)params->wdata, /*strideB*/ ggml_row_size(vec_dot_type, ne10),
+            vec_dot_type, (const char *)params->wdata, /*strideB*/ nbw1,
             (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth,
             &params->threadpool->current_chunk, (const uint8_t *)params->act_idx))
-        {
-            if (dst->flags & GGML_TENSOR_FLAG_RES) {
-                ggml_barrier(params->threadpool);
-                struct ggml_tensor * residual = src0->residual;
-                enum ggml_type const res_type = residual->type;
-                enum ggml_type const res_dot_type = (res_type == GGML_TYPE_Q4_K || res_type == GGML_TYPE_Q5_K || res_type == GGML_TYPE_Q6_K)? GGML_TYPE_Q8_2_X4 : type_traits_cpu[res_type].vec_dot_type;
-                assert(res_dot_type == vec_dot_type);
-                iqk_mul_mat(
-                    ne01, ne11, ne00,
-                    residual->type, (const char *)residual->data, /*strideA*/ residual->nb[1],
-                    vec_dot_type, (const char *)params->wdata, /*strideB*/ ggml_row_size(vec_dot_type, ne10),
-                    params->out_data, /*stride_C*/ nb1/sizeof(float), ith, nth,
-                    &params->threadpool->current_chunk, (const uint8_t *)params->act_idx);
-
-                ggml_barrier(params->threadpool);
-
-                int64_t size = ne01 * ne11;
-                assert(size % nth == 0);
-                int nrc_dst = size / nth;
-                int first_dst = ith * nrc_dst;
-                float * const dst_data = (float *)dst->data + first_dst;
-                const float * out_data = params->out_data + first_dst;
-                for (int i = 0; i < nrc_dst; ++i) dst_data[i] = dst_data[i] + out_data[i];
-            }
-            return;
-        }
+            goto EndorResidual;
 
     }
 #if GGML_USE_LLAMAFILE
@@ -1713,6 +1688,35 @@ UseGgmlGemm2:;
 
         current_chunk = atomic_fetch_add_explicit(&params->threadpool->current_chunk, 1, memory_order_relaxed);
     }
+EndorResidual:;
+#if USE_ZYK
+    if ((dst->flags & GGML_TENSOR_FLAG_RES) && src0->residual) {
+        struct ggml_tensor * residual = src0->residual;
+        GGML_ASSERT(residual->type == GGML_TYPE_IQ2_KS || residual->type == GGML_TYPE_IQ2_KS_T);
+        const size_t nbw1 = ggml_row_size(GGML_TYPE_Q8_K, ne10);
+        ggml_barrier(params->threadpool);
+        for (int64_t i11 = ith; i11 < ne11; i11 += nth) {
+            quantize_row_q8_KS(
+                (float *)((char *) src1->data + i11*nb11),
+                (void *) ((char *)params->wdata + i11*nbw1), ne10);
+        }
+        ggml_barrier(params->threadpool);
+        iqk_mul_mat(
+            ne01, ne11, ne00,
+            residual->type, (const char *)residual->data, /*strideA*/ residual->nb[1],
+            GGML_TYPE_Q8_K, (const char *)params->wdata, /*strideB*/ nbw1,
+            params->out_data, /*stride_C*/ nb1/sizeof(float), ith, nth,
+            &params->threadpool->current_chunk, (const uint8_t *)params->act_idx);
+        ggml_barrier(params->threadpool);
+        int64_t size = ne01 * ne11;
+        assert(size % nth == 0);
+        int nrc_dst = size / nth;
+        int first_dst = ith * nrc_dst;
+        float * const dst_data = (float *)dst->data + first_dst;
+        const float * out_data = params->out_data + first_dst;
+        for (int i = 0; i < nrc_dst; ++i) dst_data[i] = dst_data[i] + out_data[i];
+    }
+#endif
 }
 
 // ggml_compute_forward_mul_mat_id

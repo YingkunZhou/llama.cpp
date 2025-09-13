@@ -3178,7 +3178,7 @@ struct ZykIQ2KS {
         __m512i scales512 = _mm512_broadcast_i32x4(scales);
         for (int k = 0; k < 4; ++k) all_scales[k] = _mm512_shuffle_epi8(scales512, shuffles[k]);
         for (int iy = 0; iy < nrc_y; ++iy) {
-            __m512i sumi = _mm512_zextsi256_si512(_mm256_madd_epi16(mins, _mm256_loadu_si256((const __m256i*)q8[iy][i].bsums)));
+            __m512i sumi = _mm512_zextsi256_si512(_mm256_mullo_epi32(mins, _mm256_loadu_si256((const __m256i*)q8[iy][i].bsums)));
             for (int k = 0; k < 4; ++k) {
                 sumi = _mm512_dpwssd_epi32(sumi, all_scales[k], _mm512_maddubs_epi16(values[k], _mm512_loadu_si512((const __m512i*)q8[iy][i].qs + k)));
             }
@@ -3206,7 +3206,7 @@ struct ZykIQ2KS {
         __m128i sch = _mm_set1_epi8(x[i].extra >> 8);
         sch = _mm_and_si128(_mm_set1_epi8(-16), _mm_cmpeq_epi8(_mm_setzero_si128(), _mm_and_si128(sch, hmask)));
         scales = _mm_cvtepi8_epi16(_mm_add_epi8(scl, sch));
-        __m128i scales_s = _mm_mullo_epi16(scales,
+        mins = _mm256_cvtepi16_epi32(_mm_mullo_epi16(scales,
             _mm_cvtepi8_epi16(_mm_add_epi8(_mm_set1_epi8(-32),
                 _mm_and_si128(_mm_set1_epi8(5),
                     _mm_cmpeq_epi8(hmask,
@@ -3215,14 +3215,13 @@ struct ZykIQ2KS {
                     )
                 )
             ))
-        );
-        mins = MM256_SET_M128I(_mm_shuffle_epi8(scales_s, s8kshuffles[1]), _mm_shuffle_epi8(scales_s, s8kshuffles[0]));
+        ));
 #ifdef HAVE_FANCY_SIMD
         iqk_q2bits_prepare(x[i].qs, values);
         compute<nrc_y>(i, q8, accd);
 #else
         __m256i sumi[nrc_y];
-        for (int iy = 0; iy < nrc_y; ++iy) sumi[iy] = _mm256_madd_epi16(mins, _mm256_loadu_si256((const __m256i*)q8[iy][i].bsums));
+        for (int iy = 0; iy < nrc_y; ++iy) sumi[iy] = _mm256_mullo_epi32(mins, _mm256_loadu_si256((const __m256i*)q8[iy][i].bsums));
         iqk_q2bits_prepare(x[i].qs, 0, values);
         compute<nrc_y, 0>(i, q8, sumi);
         iqk_q2bits_prepare(x[i].qs, 1, values);
@@ -3240,10 +3239,6 @@ struct ZykIQ2KS {
     const __m128i hmask = _mm_cvtsi64_si128(0x8040201008040201);
     //7,3,6,2,5,1,4,0
     const __m128i shuffle = _mm_cvtsi64_si128(0x0703060205010400);
-    //Scales8KBase
-    const __m128i s8kshuffles[2] = {
-        _mm_set_epi32(0x07060706, 0x05040504, 0x03020302, 0x01000100),
-        _mm_set_epi32(0x0f0e0f0e, 0x0d0c0d0c, 0x0b0a0b0a, 0x09080908)};
 #ifdef HAVE_FANCY_SIMD
     __m512i values[4];
     const __m512i iqk_values = _mm512_broadcast_i32x4(_mm_loadu_si128((const __m128i *)kvalues_iq2nl));
