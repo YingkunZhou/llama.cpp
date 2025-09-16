@@ -537,6 +537,9 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     [GGML_TYPE_IQ2_KS_T] = {
         .vec_dot_type             = GGML_TYPE_Q8_K,
     },
+    [GGML_TYPE_IQ2_KL] = {
+        .vec_dot_type             = GGML_TYPE_Q8_K,
+    },
     [GGML_TYPE_IQ3_KS] = {
         .vec_dot_type             = GGML_TYPE_Q8_K,
     },
@@ -1553,7 +1556,7 @@ void ggml_compute_forward_mul_mat(
                                      src1->type,
                                      dst->type))
                     goto UseGgmlGemm1;
-        return;
+        goto EndorResidual;
     }
 UseGgmlGemm1:;
 #endif
@@ -1621,7 +1624,7 @@ UseGgmlGemm1:;
                                      vec_dot_type,
                                      dst->type))
                     goto UseGgmlGemm2;
-        return;
+        goto EndorResidual;
     }
 UseGgmlGemm2:;
 #endif

@@ -15,6 +15,7 @@
 #define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  128
 #define SPEC_VOCAB_CHECK_START_TOKEN_ID 5
 
+// #define ORIG
 #ifdef ORIG
 struct seq_draft {
     bool active   = false;

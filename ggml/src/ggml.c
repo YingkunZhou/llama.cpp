@@ -970,6 +970,12 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = sizeof(block_q8_k_r8)/8,
         .is_quantized             = true,
     },
+    [GGML_TYPE_Q8_K_R16] = {
+        .type_name                = "q8_k_r16",
+        .blck_size                = QK_K,
+        .type_size                = sizeof(block_q8_k_r16)/16,
+        .is_quantized             = true,
+    },
     [GGML_TYPE_Q8_0_R8] = {
         .type_name                = "q8_0_r8",
         .blck_size                = QK8_0,
