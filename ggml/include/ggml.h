@@ -353,6 +353,7 @@ extern "C" {
     struct ggml_object;
     struct ggml_context;
     struct ggml_cgraph;
+#define USE_GRAPH_CTX 1
 
     // NOTE: always add types at the end of the enum to keep backward compatibility
     enum ggml_type {

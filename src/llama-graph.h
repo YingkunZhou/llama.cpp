@@ -480,6 +480,11 @@ public:
     ggml_tensor * t_embd        = nullptr;
     ggml_tensor * t_embd_pooled = nullptr;
 
+#if USE_GRAPH_CTX
+    // graph splits
+    void * splits = nullptr;
+    // int n_splits; here we only allow n_splits == 2;
+#endif
     std::vector<llm_graph_input_ptr> inputs;
 
     ggml_context_ptr ctx_compute;

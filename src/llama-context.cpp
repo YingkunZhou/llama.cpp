@@ -241,6 +241,7 @@ llama_context::llama_context(
 
         gf_res_prev.reset(new llm_graph_result(max_nodes));
         gf_res_reserve.reset(new llm_graph_result(max_nodes));
+        gf_res_target.reset(new llm_graph_result(max_nodes));
 
         // TODO: move these checks to ggml_backend_sched
         // enabling pipeline parallelism in the scheduler increases memory usage, so it is only done when necessary
@@ -707,7 +708,6 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
     }
 
     auto * res = gf_res_prev.get();
-    auto * gf  = res->get_gf();
 
     // the new graph parameters
     // in order to correctly reuse a graph, it's full topology has to be uniquely determined by these parameters
@@ -717,7 +717,23 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         //LLAMA_LOG_DEBUG("%s: reusing previous graph\n", __func__);
 
         n_reused++;
+#if USE_GRAPH_CTX
+        ggml_backend_sched_set_splits(sched.get(), res->splits);
+        use_target = true;
     } else {
+        auto * res_tgt = gf_res_target.get();
+        const auto gparams_tgt = graph_params(res_tgt, ubatch, mctx, gtype);
+        if (res_tgt->can_reuse(gparams_tgt)) {
+            n_reused++;
+            ggml_backend_sched_set_splits(sched.get(), res_tgt->splits);
+            res = res_tgt;
+            use_target = false;
+        } else {
+            res = use_target? res_tgt : res;
+            ggml_backend_sched_set_splits(sched.get(), res->splits);
+#else
+    } else {
+#endif
         res->reset();
 
         ggml_backend_sched_reset(sched.get());
@@ -725,7 +741,13 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
 
         //const auto t_start_us = ggml_time_us();
 
-        gf = model.build_graph(gparams);
+#if USE_GRAPH_CTX
+        auto * gf = model.build_graph(use_target? gparams_tgt : gparams);
+        // in case of 1,5,1,5,...
+        use_target = !use_target;
+#else
+        auto * gf = model.build_graph(gparams);
+#endif
 
         //LLAMA_LOG_INFO("graph build time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
 
@@ -735,11 +757,16 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
             return nullptr;
         }
 
-        if (!ggml_backend_sched_alloc_graph(sched.get(), gf)) {
+#if USE_GRAPH_CTX
+        GGML_ASSERT(ggml_backend_sched_alloc_graph(sched.get(), gf, (void *)res->get_ctx()));
+        }
+#else
+        if (!ggml_backend_sched_alloc_graph(sched.get(), gf, NULL)) {
             LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
             ret = GGML_STATUS_ALLOC_FAILED;
             return nullptr;
         }
+#endif
     }
 
     // set the input data for the input tensors

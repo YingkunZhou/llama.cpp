@@ -661,7 +661,7 @@ bool llama_kv_cache_unified::update(llama_context * lctx, bool do_shift, const d
             res->reset();
 
             auto * gf = build_graph_shift(res, lctx);
-            if (!ggml_backend_sched_alloc_graph(sched, gf)) {
+            if (!ggml_backend_sched_alloc_graph(sched, gf, (void *)res->get_ctx())) {
                 LLAMA_LOG_ERROR("%s: failed to allocate compute graph for K-shift\n", __func__);
                 return updated;
             }
@@ -715,7 +715,7 @@ bool llama_kv_cache_unified::update(llama_context * lctx, bool do_shift, const d
         res->reset();
 
         auto * gf = build_graph_defrag(res, lctx, dinfo);
-        if (!ggml_backend_sched_alloc_graph(sched, gf)) {
+        if (!ggml_backend_sched_alloc_graph(sched, gf, (void *)res->get_ctx())) {
             LLAMA_LOG_ERROR("%s: failed to allocate compute graph for defrag\n", __func__);
             return updated;
         }

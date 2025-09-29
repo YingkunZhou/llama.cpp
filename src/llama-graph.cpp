@@ -413,6 +413,9 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
 
 llm_graph_result::llm_graph_result(int64_t max_nodes) : max_nodes(max_nodes) {
     reset();
+#if USE_GRAPH_CTX
+    splits = ggml_backend_alloc_splits();
+#endif
 
     const char * LLAMA_GRAPH_RESULT_DEBUG = getenv("LLAMA_GRAPH_RESULT_DEBUG");
     debug = LLAMA_GRAPH_RESULT_DEBUG ? atoi(LLAMA_GRAPH_RESULT_DEBUG) : 0;

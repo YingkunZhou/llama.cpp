@@ -3698,7 +3698,7 @@ bool clip_image_batch_encode(clip_ctx * ctx, const int n_threads, const clip_ima
     ctx->debug_print_tensors.clear();
     ggml_backend_sched_reset(ctx->sched.get());
     ggml_cgraph * gf = clip_image_build_graph(ctx, imgs);
-    ggml_backend_sched_alloc_graph(ctx->sched.get(), gf);
+    ggml_backend_sched_alloc_graph(ctx->sched.get(), gf, NULL);
 
     // set inputs
     const auto & model   = ctx->model;

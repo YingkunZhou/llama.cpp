@@ -747,7 +747,7 @@ void ggml_opt_alloc(ggml_opt_context_t opt_ctx, bool backward) {
         opt_ctx->allocated_graph_copy = graph;
     }
 
-    ggml_backend_sched_alloc_graph(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy);
+    ggml_backend_sched_alloc_graph(opt_ctx->backend_sched, opt_ctx->allocated_graph_copy, NULL);
     opt_ctx->allocated_graph = graph;
 
     opt_ctx->eval_ready = true;

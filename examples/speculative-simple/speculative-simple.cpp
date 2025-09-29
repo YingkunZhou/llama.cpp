@@ -212,7 +212,7 @@ int main(int argc, char ** argv) {
             }
         }
 
-        LOG_DBG("accepted %d/%d draft tokens, the last target token is: (%d)\n", (int) ids.size() - 1, (int) draft.size(), id_last);
+        LOG_DBG("\naccepted %d/%d draft tokens, the last target token is: (%d)\n", (int) ids.size() - 1, (int) draft.size(), id_last);
 
         {
             LOG_DBG("clear kv cache from any extra tokens, n_past = %d\n", n_past);
