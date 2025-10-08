@@ -6947,10 +6947,6 @@ void ggml_set_ikquant(struct ggml_tensor * tensor) {
     tensor->flags |= GGML_TENSOR_FLAG_IKQ;
 }
 
-void ggml_set_residual(struct ggml_tensor * tensor) {
-    GGML_ASSERT(tensor->op == GGML_OP_MUL_MAT);
-    tensor->flags |= GGML_TENSOR_FLAG_RES;
-}
 ////////////////////////////////////////////////////////////////////////////////
 
 void ggml_quantize_init(enum ggml_type type) {

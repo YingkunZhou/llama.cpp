@@ -351,6 +351,9 @@ struct ggml_gallocr {
     ggml_backend_buffer_t * buffers; // [n_buffers]
     struct ggml_dyn_tallocr ** buf_tallocs; // [n_buffers]
     int n_buffers;
+    bool need_init_residual_buf;
+    ggml_backend_buffer_t * residual_bufs; // [n_buffers]
+    size_t residual_offset;
 
     struct ggml_hash_set hash_set;
     struct hash_node * hash_values; // [hash_set.size]
@@ -362,7 +365,7 @@ struct ggml_gallocr {
     int n_leafs;
 };
 
-ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs) {
+ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs, bool use_res) {
     ggml_gallocr_t galloc = (ggml_gallocr_t)calloc(1, sizeof(struct ggml_gallocr));
     GGML_ASSERT(galloc != NULL);
 
@@ -393,12 +396,17 @@ ggml_gallocr_t ggml_gallocr_new_n(ggml_backend_buffer_type_t * bufts, int n_bufs
         }
     }
     galloc->n_buffers = n_bufs;
+    galloc->need_init_residual_buf = use_res;
+    if (use_res) {
+        galloc->residual_bufs = calloc(n_bufs, sizeof(ggml_backend_buffer_t));
+        GGML_ASSERT(galloc->residual_bufs != NULL);
+    }
 
     return galloc;
 }
 
 ggml_gallocr_t ggml_gallocr_new(ggml_backend_buffer_type_t buft) {
-    return ggml_gallocr_new_n(&buft, 1);
+    return ggml_gallocr_new_n(&buft, 1, false);
 }
 
 void ggml_gallocr_free(ggml_gallocr_t galloc) {
@@ -679,6 +687,7 @@ bool ggml_gallocr_reserve_n(ggml_gallocr_t galloc, struct ggml_cgraph * graph, c
     // allocate in hash table
     ggml_gallocr_alloc_graph_impl(galloc, graph, node_buffer_ids, leaf_buffer_ids);
 
+    size_t residual_size[3] = {/*output=*/0, /*input=*/0, /*weight=*/0};
     // set the node_allocs from the hash table
     if (galloc->n_nodes < graph->n_nodes) {
         free(galloc->node_allocs);
@@ -688,6 +697,19 @@ bool ggml_gallocr_reserve_n(ggml_gallocr_t galloc, struct ggml_cgraph * graph, c
     galloc->n_nodes = graph->n_nodes;
     for (int i = 0; i < graph->n_nodes; i++) {
         struct ggml_tensor * node = graph->nodes[i];
+        struct ggml_tensor * res_node = node->residual;
+        if (res_node) {
+            // TODO: only need to consider max-draft size
+            size_t dst_size  = ggml_backend_buft_get_alloc_size(galloc->bufts[0], res_node);
+            size_t src1_size = ggml_backend_buft_get_alloc_size(galloc->bufts[0], res_node->src[1]);
+            size_t src2_size = ggml_backend_buft_get_alloc_size(galloc->bufts[0], res_node->src[2]);
+            residual_size[0] = MAX(residual_size[0], dst_size); // output
+            residual_size[1] = MAX(residual_size[1], src1_size + src2_size); // input
+            if (galloc->n_buffers == 2) {
+                size_t src0_size = ggml_backend_buft_get_alloc_size(galloc->bufts[0], res_node->src[0]);
+                residual_size[2] = MAX(residual_size[2], src0_size); // weight
+            }
+        }
         struct node_alloc * node_alloc = &galloc->node_allocs[i];
         if (node->view_src || node->data) {
             node_alloc->dst.buffer_id = -1;
@@ -762,6 +784,30 @@ bool ggml_gallocr_reserve_n(ggml_gallocr_t galloc, struct ggml_cgraph * graph, c
         }
     }
 
+    if (galloc->need_init_residual_buf) {
+        galloc->need_init_residual_buf = false;
+        // requires CPU-GPU or CPU-only
+        assert(galloc->n_buffers < 3);
+        galloc->residual_offset = residual_size[0];
+        // needs self output(for Host-to-GPU) buffer and
+        // GPU-to-Host/self-quant input buffer for CPU backend
+        residual_size[1] = residual_size[0] + residual_size[1];
+        galloc->residual_bufs[galloc->n_buffers-1] = ggml_backend_buft_alloc_buffer(
+            galloc->bufts[galloc->n_buffers-1], residual_size[1]);
+        // needs self-mulmat/Host-to-GPU output buffer and
+        // Host-to-GPU wight buffer/GPU-to-Host input buffer for CUDA backend
+        if (galloc->n_buffers == 2) {
+            residual_size[2] = residual_size[0] + residual_size[2];
+            galloc->residual_bufs[0] = ggml_backend_buft_alloc_buffer(
+                galloc->bufts[0], MAX(residual_size[1], residual_size[2]));
+        }
+        for (int i = 0; i < galloc->n_buffers; ++i) {
+            if (galloc->residual_bufs[i] == NULL) {
+                GGML_LOG_ERROR("%s: failed to allocate %s buffer of size %zu\n", __func__, ggml_backend_buft_name(galloc->bufts[i]), residual_size[i+1]);
+                return false;
+            }
+        }
+    }
     return true;
 }
 
@@ -793,6 +839,25 @@ static void ggml_gallocr_init_tensor(ggml_gallocr_t galloc, struct ggml_tensor *
             if (tensor->buffer == NULL) {
                 // this tensor was allocated without ggml-backend
                 return;
+            }
+        }
+        struct ggml_tensor * res_tensor = tensor->residual;
+        if (res_tensor && res_tensor->data == NULL) {
+            ggml_backend_buffer_t cpu_buffer = galloc->residual_bufs[galloc->n_buffers-1];
+            char * base = (char *) ggml_backend_buffer_get_base(cpu_buffer);
+            ggml_backend_tensor_alloc(cpu_buffer, res_tensor, base);
+            char * addr = base + galloc->residual_offset;
+            struct ggml_tensor * quanted_input = res_tensor->src[1];
+            ggml_backend_tensor_alloc(cpu_buffer, quanted_input, addr);
+            addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], quanted_input);
+            ggml_backend_tensor_alloc(cpu_buffer, res_tensor->src[2], addr);
+            if (galloc->n_buffers == 2) {
+                struct ggml_tensor * res_node_cuda = res_tensor->residual;
+                ggml_backend_buffer_t cuda_buffer = galloc->residual_bufs[0];
+                base = (char *) ggml_backend_buffer_get_base(cuda_buffer);
+                ggml_backend_tensor_alloc(cuda_buffer, res_node_cuda, base);
+                addr = base + galloc->residual_offset;
+                ggml_backend_tensor_alloc(cuda_buffer, res_node_cuda->src[0], addr);
             }
         }
     }

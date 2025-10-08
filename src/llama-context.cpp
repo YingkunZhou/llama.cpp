@@ -241,7 +241,9 @@ llama_context::llama_context(
 
         gf_res_prev.reset(new llm_graph_result(max_nodes));
         gf_res_reserve.reset(new llm_graph_result(max_nodes));
+#if USE_GRAPH_CTX
         gf_res_target.reset(new llm_graph_result(max_nodes));
+#endif
 
         // TODO: move these checks to ggml_backend_sched
         // enabling pipeline parallelism in the scheduler increases memory usage, so it is only done when necessary
@@ -271,7 +273,7 @@ llama_context::llama_context(
             }
         }
 
-        sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, pipeline_parallel, cparams.op_offload));
+        sched.reset(ggml_backend_sched_new(backend_ptrs.data(), backend_buft.data(), backend_ptrs.size(), max_nodes, pipeline_parallel, cparams.use_res, cparams.op_offload));
 
         if (pipeline_parallel) {
             LLAMA_LOG_INFO("%s: pipeline parallelism enabled (n_copies=%d)\n", __func__, ggml_backend_sched_get_n_copies(sched.get()));
@@ -758,7 +760,11 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         }
 
 #if USE_GRAPH_CTX
-        GGML_ASSERT(ggml_backend_sched_alloc_graph(sched.get(), gf, (void *)res->get_ctx()));
+        if (ggml_backend_sched_alloc_graph(sched.get(), gf, (void *)res->get_ctx())) {
+            LLAMA_LOG_ERROR("%s: failed to allocate graph\n", __func__);
+            ret = GGML_STATUS_ALLOC_FAILED;
+            return nullptr;
+        }
         }
 #else
         if (!ggml_backend_sched_alloc_graph(sched.get(), gf, NULL)) {

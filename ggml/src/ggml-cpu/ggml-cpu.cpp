@@ -88,10 +88,6 @@ struct ggml_backend_cpu_context {
 
     uint8_t *           work_data;
     size_t              work_size;
-    uint8_t *           act_idx;
-    size_t              act_size;
-    float   *           out_data;
-    size_t              out_size;
 
     ggml_abort_callback abort_callback;
     void *              abort_callback_data;
@@ -169,27 +165,6 @@ static enum ggml_status ggml_backend_cpu_graph_compute(ggml_backend_t backend, s
         cpu_ctx->work_size = cplan.work_size;
     }
     cplan.work_data = (uint8_t *)cpu_ctx->work_data;
-    if (cpu_ctx->act_size < cplan.act_size) {
-        delete[] cpu_ctx->act_idx;
-        cpu_ctx->act_idx = new uint8_t[cplan.act_size];
-        if (cpu_ctx->act_idx == NULL) {
-            cpu_ctx->act_idx = 0;
-            return GGML_STATUS_ALLOC_FAILED;
-        }
-        cpu_ctx->act_size = cplan.act_size;
-    }
-    cplan.act_idx   = (uint8_t *)cpu_ctx->act_idx;
-    if (cpu_ctx->out_size < cplan.out_size) {
-        delete[] cpu_ctx->out_data;
-        cpu_ctx->out_data = new float[cplan.out_size];
-        if (cpu_ctx->out_data == NULL) {
-            cpu_ctx->out_size = 0;
-            return GGML_STATUS_ALLOC_FAILED;
-        }
-        cpu_ctx->out_size = cplan.out_size;
-    }
-    cplan.out_data = cpu_ctx->out_data;
-
     cplan.abort_callback      = cpu_ctx->abort_callback;
     cplan.abort_callback_data = cpu_ctx->abort_callback_data;
 
@@ -230,10 +205,6 @@ ggml_backend_t ggml_backend_cpu_init(void) {
     ctx->threadpool          = NULL;
     ctx->work_data           = NULL;
     ctx->work_size           = 0;
-    ctx->act_idx             = NULL;
-    ctx->act_size            = 0;
-    ctx->out_data            = NULL;
-    ctx->out_size            = 0;
     ctx->abort_callback      = NULL;
     ctx->abort_callback_data = NULL;
 

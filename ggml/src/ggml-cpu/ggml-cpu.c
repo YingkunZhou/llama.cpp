@@ -1489,29 +1489,12 @@ void ggml_compute_forward_mul_mat(
         GGML_ASSERT(src1->type == GGML_TYPE_F32);
 
 #if USE_ZYK
-        if (type == GGML_TYPE_IQ2_KS || type == GGML_TYPE_IQ2_KS_T) {
-            if (ith == 0) {
-                assert(QK_K <= 256); // uint8_t cannot overflow
-                uint32_t * heads = (uint32_t *)params->act_idx;
-                const int JUMP  = 1;
-                uint32_t off = 8;
-                for (int i = 0; i < ne10/32; ++i) {
-                    params->act_idx[off++] = 32/JUMP;
-                }
-                heads[0] = off;
-                heads[1] = heads[0] + ne10/2/JUMP;
-                for (int i = 0; i < ne10/256; ++i) {
-                    for (int j = 0; j < 256; j += JUMP) {
-                        params->act_idx[off++] = j;
-                    }
-                }
-            }
+        if (type == GGML_TYPE_IQ2_KS) {
             for (int64_t i11 = ith; i11 < ne11; i11 += nth) {
                 quantize_row_q8_KS(
                     (float *)((char *) src1->data + i11*nb11),
                     (void *) ((char *)params->wdata + i11*nbw1), ne10);
             }
-
         } else
 #endif
         for (int64_t i11 = ith; i11 < ne11; i11 += nth) {
@@ -1530,9 +1513,8 @@ void ggml_compute_forward_mul_mat(
             src0->type, (const char *)src0->data, /*strideA*/ nb01,
             vec_dot_type, (const char *)params->wdata, /*strideB*/ nbw1,
             (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth,
-            &params->threadpool->current_chunk, (const uint8_t *)params->act_idx))
-            goto EndorResidual;
-
+            &params->threadpool->current_chunk, NULL))
+            return;
     }
 #if GGML_USE_LLAMAFILE
     // broadcast factors
@@ -1556,7 +1538,7 @@ void ggml_compute_forward_mul_mat(
                                      src1->type,
                                      dst->type))
                     goto UseGgmlGemm1;
-        goto EndorResidual;
+        return;
     }
 UseGgmlGemm1:;
 #endif
@@ -1624,7 +1606,7 @@ UseGgmlGemm1:;
                                      vec_dot_type,
                                      dst->type))
                     goto UseGgmlGemm2;
-        goto EndorResidual;
+        return;
     }
 UseGgmlGemm2:;
 #endif
@@ -1691,35 +1673,44 @@ UseGgmlGemm2:;
 
         current_chunk = atomic_fetch_add_explicit(&params->threadpool->current_chunk, 1, memory_order_relaxed);
     }
-EndorResidual:;
-#if USE_ZYK
-    if ((dst->flags & GGML_TENSOR_FLAG_RES) && src0->residual) {
-        struct ggml_tensor * residual = src0->residual;
-        GGML_ASSERT(residual->type == GGML_TYPE_IQ2_KS || residual->type == GGML_TYPE_IQ2_KS_T);
-        const size_t nbw1 = ggml_row_size(GGML_TYPE_Q8_K, ne10);
-        ggml_barrier(params->threadpool);
-        for (int64_t i11 = ith; i11 < ne11; i11 += nth) {
-            quantize_row_q8_KS(
-                (float *)((char *) src1->data + i11*nb11),
-                (void *) ((char *)params->wdata + i11*nbw1), ne10);
-        }
-        ggml_barrier(params->threadpool);
-        iqk_mul_mat(
-            ne01, ne11, ne00,
-            residual->type, (const char *)residual->data, /*strideA*/ residual->nb[1],
-            GGML_TYPE_Q8_K, (const char *)params->wdata, /*strideB*/ nbw1,
-            params->out_data, /*stride_C*/ nb1/sizeof(float), ith, nth,
-            &params->threadpool->current_chunk, (const uint8_t *)params->act_idx);
-        ggml_barrier(params->threadpool);
-        int64_t size = ne01 * ne11;
-        assert(size % nth == 0);
-        int nrc_dst = size / nth;
-        int first_dst = ith * nrc_dst;
-        float * const dst_data = (float *)dst->data + first_dst;
-        const float * out_data = params->out_data + first_dst;
-        for (int i = 0; i < nrc_dst; ++i) dst_data[i] = dst_data[i] + out_data[i];
-    }
-#endif
+}
+
+static void ggml_compute_forward_residual(
+        const struct ggml_compute_params * params,
+              struct ggml_tensor * dst) {
+
+    const struct ggml_tensor * src0 = dst->src[0];
+    const struct ggml_tensor * src1 = dst->src[1];
+    const struct ggml_tensor * src2 = dst->src[2];
+
+    GGML_TENSOR_BINARY_OP_LOCALS
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    GGML_ASSERT(ne0 == ne01);
+    GGML_ASSERT(ne1 == ne11);
+    GGML_ASSERT(ne2 == ne12);
+    GGML_ASSERT(ne3 == ne13);
+
+    // we don't support permuted src0 or src1
+    GGML_ASSERT(nb00 == ggml_type_size(src0->type));
+    GGML_ASSERT(nb10 == ggml_type_size(src1->type));
+
+    // dst cannot be transposed or permuted
+    GGML_ASSERT(nb0 == sizeof(float));
+    GGML_ASSERT(nb0 <= nb1);
+    GGML_ASSERT(nb1 <= nb2);
+    GGML_ASSERT(nb2 <= nb3);
+
+    GGML_ASSERT(dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(ne12 == 1 && ne13 == 1 && ne02 == 1 && ne03 == 1);
+    iqk_mul_mat(
+        ne01, ne11, ne00,
+        src0->type, (const char *)src0->data, /*strideA*/ nb01,
+        src1->type, (const char *)src1->data, /*strideB*/ nb11,
+        (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth,
+        &params->threadpool->current_chunk, (const uint8_t *)src2->data);
 }
 
 // ggml_compute_forward_mul_mat_id
@@ -2104,6 +2095,49 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
         case GGML_OP_MUL_MAT:
             {
                 ggml_compute_forward_mul_mat(params, tensor);
+                struct ggml_tensor * res_tensor = tensor->residual;
+                if (res_tensor) {
+                    ggml_barrier(params->threadpool);
+                    const int ith = params->ith;
+                    const int nth = params->nth;
+                    const struct ggml_tensor * src0 = res_tensor->src[0];
+                    const struct ggml_tensor * src1 = res_tensor->src[1];
+                    const struct ggml_tensor * src2 = res_tensor->src[2];
+                    int64_t ne10 = src1->ne[0];
+                    GGML_ASSERT(src1->type == GGML_TYPE_Q8_K);
+                    for (int64_t i11 = ith; i11 < src1->ne[1]; i11 += nth) {
+                        quantize_row_q8_KS(
+                            (float *)((char *) tensor->src[1]->data + i11 * 4*ne10),
+                            (void *) ((char *) src1->data + i11 * src1->nb[1]), ne10);
+                    }
+                    if (ith == 0 && src0->type == GGML_TYPE_IQ2_KS_T) {
+                        uint32_t * heads = (uint32_t *) src2->data;
+                        uint32_t off = 2 * sizeof(uint32_t);
+                        const int STRIDE = 1;
+                        heads[0] = off + ne10/32;
+                        heads[1] = heads[0] + ne10/2/STRIDE;
+                        uint8_t * act_idx = (uint8_t *) src2->data;
+                        for (int64_t i = 0; i < ne10/32; ++i) {
+                            act_idx[off++] = 32/STRIDE;
+                        }
+                        for (int64_t i = 0; i < ne10/QK_K; ++i) {
+                            for (int j = 0; j < QK_K; j += STRIDE) {
+                                act_idx[off++] = j;
+                            }
+                        }
+                    }
+                    ggml_barrier(params->threadpool);
+                    // if use GPU backend, the above data will be obtained from res_tensor->residual->src[0]
+                    // furthermore, res_tensor->residual->src[0] data is quantized from res_tensor->residual->src[1], which is also tensor->src[1];
+                    ggml_compute_forward_residual(params, res_tensor);
+                    ggml_barrier(params->threadpool);
+                    int64_t size = tensor->ne[0] * tensor->ne[1];
+                    assert(size % nth == 0);
+                    int64_t ne_per_th = size / nth;
+                    float * data = (float *)tensor->data + ith * ne_per_th;
+                    float * res_data = (float *)res_tensor->data + ith * ne_per_th;
+                    for (int i = 0; i < ne_per_th; ++i) data[i] = data[i] + res_data[i];
+                }
             } break;
         case GGML_OP_MUL_MAT_ID:
             {
@@ -2979,8 +3013,6 @@ struct ggml_cplan ggml_graph_plan(
     }
 
     size_t work_size = 0;
-    size_t act_size  = 0;
-    size_t out_size  = 0;
 
     struct ggml_cplan cplan;
     memset(&cplan, 0, sizeof(struct ggml_cplan));
@@ -2996,8 +3028,6 @@ struct ggml_cplan ggml_graph_plan(
         max_tasks = MAX(max_tasks, n_tasks);
 
         size_t cur = 0;
-        size_t act_cur = 0;
-        size_t out_cur = 0;
 
         if (!ggml_cpu_extra_work_size(n_threads, node, &cur)) {
             switch (node->op) {
@@ -3034,11 +3064,6 @@ struct ggml_cplan ggml_graph_plan(
                         const enum ggml_type vec_dot_type = (node->flags & GGML_TENSOR_FLAG_IKQ) && (type == GGML_TYPE_Q4_K || type == GGML_TYPE_Q5_K || type == GGML_TYPE_Q6_K)? GGML_TYPE_Q8_2_X4 : type_traits_cpu[type].vec_dot_type;
                         if (node->src[1]->type != vec_dot_type) {
                             cur = ggml_row_size(vec_dot_type, ggml_nelements(node->src[1]));
-                            act_cur = 8 + node->src[1]->ne[0]*(1+32)/32; // 1 cnt per 32 elements
-                            assert(node->src[0]->ne[0] == node->src[1]->ne[0]);
-                            if (node->flags & GGML_TENSOR_FLAG_RES) {
-                                out_cur = node->src[0]->ne[1] * node->src[1]->ne[1];
-                            }
                         }
                     } break;
                 case GGML_OP_MUL_MAT_ID:
@@ -3153,28 +3178,16 @@ struct ggml_cplan ggml_graph_plan(
         }
 
         work_size = MAX(work_size, cur);
-        act_size  = MAX(act_size, act_cur);
-        out_size  = MAX(out_size, out_cur);
     }
 
     if (work_size > 0) {
         work_size += CACHE_LINE_SIZE*(n_threads);
     }
-    if (act_size > 0) {
-        act_size += CACHE_LINE_SIZE*(n_threads); // but why?
-    }
-    if (out_size > 0) {
-        out_size += CACHE_LINE_SIZE*(n_threads);
-    }
 
     cplan.threadpool = threadpool;
     cplan.n_threads  = MIN(max_tasks, n_threads);
     cplan.work_size  = work_size;
-    cplan.act_size   = act_size;
-    cplan.out_size   = out_size;
     cplan.work_data  = NULL;
-    cplan.act_idx    = NULL;
-    cplan.out_data   = NULL;
 
     return cplan;
 }
@@ -3193,9 +3206,6 @@ static thread_ret_t ggml_graph_compute_thread(void * data) {
         /*.nth       =*/ atomic_load_explicit(&tp->n_threads_cur, memory_order_relaxed),
         /*.wsize     =*/ cplan->work_size,
         /*.wdata     =*/ cplan->work_data,
-        /*.act_idx   =*/ cplan->act_idx,
-        /*.out_size  =*/ cplan->out_size,
-        /*.out_data  =*/ cplan->out_data,
         /*.threadpool=*/ tp,
     };
 
@@ -3444,10 +3454,8 @@ enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cpl
     GGML_ASSERT(cplan);
     GGML_ASSERT(cplan->n_threads > 0);
     GGML_ASSERT(cplan->work_size == 0 || cplan->work_data != NULL);
-    GGML_ASSERT(cplan->act_size  == 0 || cplan->act_idx   != NULL);
-    GGML_ASSERT(cplan->out_size  == 0 || cplan->out_data  != NULL);
 
-    int n_threads                               = cplan->n_threads;
+    int n_threads = cplan->n_threads;
     struct ggml_threadpool * threadpool = cplan->threadpool;
 
     bool disposable_threadpool = false;

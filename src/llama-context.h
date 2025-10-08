@@ -273,8 +273,10 @@ private:
 
     llm_graph_result_ptr gf_res_prev;
     llm_graph_result_ptr gf_res_reserve;
+#if USE_GRAPH_CTX
     llm_graph_result_ptr gf_res_target;
     bool use_target = false;
+#endif
 
     // host buffer for the model output (logits and embeddings)
     ggml_backend_buffer_ptr buf_output;

@@ -22,9 +22,6 @@ struct ggml_compute_params {
     // work buffer for all threads
     size_t wsize;
     void * wdata;
-    uint8_t * act_idx;
-    size_t  out_size;
-    float * out_data;
 
     struct ggml_threadpool * threadpool;
 };

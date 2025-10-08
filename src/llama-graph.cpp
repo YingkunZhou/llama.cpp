@@ -561,7 +561,15 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     // here we use ik_llama.cpp kernel to process weight-activation mat mul
     assert(ggml_backend_buffer_get_usage(w->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
     ggml_set_ikquant(res);
-    if (cparams.use_res) ggml_set_residual(res);
+    res->residual = NULL;
+    if (cparams.use_res && w->residual) {
+        res->residual = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, w->ne[1], cur->ne[1]);
+        res->residual->src[0] = w->residual;
+        // TODO: the two tensors' data must be adjacent
+        res->residual->src[1] = ggml_new_tensor(ctx0, GGML_TYPE_Q8_K, 4, cur->ne);
+        // 1 cnt per 32 elements, with 2 start point at the beginning of the array
+        res->residual->src[2] = ggml_new_tensor_1d(ctx0, GGML_TYPE_I8, 8 + cur->ne[0]/32 + cur->ne[0]);
+    }
 
     for (const auto & lora : *loras) {
         llama_adapter_lora_weight * lw = lora.first->get_weight(w);

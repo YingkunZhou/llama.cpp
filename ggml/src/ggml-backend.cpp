@@ -1135,6 +1135,21 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
         int cur_backend_id = split->backend_id;
         for (; i < graph->n_nodes; i++) {
             struct ggml_tensor * node = graph->nodes[i];
+            struct ggml_tensor * res_node = node->residual;
+            if (res_node && sched->n_backends == 2) {
+                struct ggml_tensor * wight = res_node->src[0];
+                struct ggml_tensor * res_node_cuda = res_node->residual;
+                if (graph_ctx) {
+                    res_node_cuda = ggml_dup_tensor_layout((ggml_context *)graph_ctx, res_node);
+                    // consider copy residual weight to CUDA buffer
+                    res_node_cuda->src[0] = ggml_dup_tensor_layout((ggml_context *)graph_ctx, wight);
+                } else {
+                    res_node_cuda = ggml_dup_tensor_layout(sched->ctx, res_node);
+                    // consider copy residual weight to CUDA buffer
+                    res_node_cuda->src[0] = ggml_dup_tensor_layout(sched->ctx, wight);
+                }
+                res_node_cuda->src[1] = node->src[1];
+            }
 
             if (ggml_is_view_op(node->op)) {
                 continue;
@@ -1184,6 +1199,11 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
                         realloc(sched->splits, sched->splits_capacity * sizeof(struct ggml_backend_sched_split));
                     GGML_ASSERT(sched->splits != NULL);
                 }
+#if USE_GRAPH_CTX
+                if (graph_ctx) {
+                    GGML_ASSERT(split->n_inputs == split->n_inputs_cpy);
+                }
+#endif
                 split = &sched->splits[i_split];
                 split->backend_id = node_backend_id;
                 split->i_start = i;
@@ -1516,6 +1536,7 @@ ggml_backend_sched_t ggml_backend_sched_new(
         int n_backends,
         size_t graph_size,
         bool parallel,
+        bool use_res,
         bool op_offload) {
     GGML_ASSERT(n_backends > 0);
     GGML_ASSERT(n_backends <= GGML_SCHED_MAX_BACKENDS);
@@ -1560,7 +1581,7 @@ ggml_backend_sched_t ggml_backend_sched_new(
         }
     }
 
-    sched->galloc = ggml_gallocr_new_n(sched->bufts, n_backends);
+    sched->galloc = ggml_gallocr_new_n(sched->bufts, n_backends, use_res);
     sched->op_offload = op_offload;
 
     ggml_backend_sched_reset(sched);

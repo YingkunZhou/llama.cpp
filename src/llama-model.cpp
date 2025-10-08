@@ -1930,7 +1930,7 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
             ggml_tensor * t_meta = ml.get_tensor_meta(tn.str().c_str());
 
             if (!t_meta) {
-                if (flags & TENSOR_NOT_REQUIRED) {
+                if ((flags & TENSOR_NOT_REQUIRED) || params.use_as_residual) {
                     return nullptr;
                 }
                 throw std::runtime_error(format("missing tensor '%s'", tn.str().c_str()));
@@ -17477,6 +17477,7 @@ llama_model_params llama_model_default_params() {
         /*.use_mmap                    =*/ true,
         /*.use_mlock                   =*/ false,
         /*.check_tensors               =*/ false,
+        /*.use_as_residual             =*/ false,
     };
 
 #ifdef GGML_USE_METAL
@@ -17502,7 +17503,7 @@ void llama_model_free(llama_model * model) {
 void llama_model_append_res(const llama_model * model, const llama_model * model_res) {
     if (!model_res) return;
     // FIXME: currently, we mainly consider GPT structure, especially non-MoE, and only 2D-weight-tensor
-    model->output->residual = model_res->output;
+    // model->output->residual = model_res->output;
     for (size_t il = 0; il < model->layers.size(); ++il) {
         // attention
         if (model->layers[il].wq)        model->layers[il].wq->residual        = model_res->layers[il].wq;

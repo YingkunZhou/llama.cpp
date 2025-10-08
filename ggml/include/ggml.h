@@ -353,7 +353,7 @@ extern "C" {
     struct ggml_object;
     struct ggml_context;
     struct ggml_cgraph;
-#define USE_GRAPH_CTX 1
+#define USE_GRAPH_CTX 0
 
     // NOTE: always add types at the end of the enum to keep backward compatibility
     enum ggml_type {
@@ -620,7 +620,6 @@ extern "C" {
         GGML_TENSOR_FLAG_PARAM  =  4, // ...contains trainable parameters
         GGML_TENSOR_FLAG_LOSS   =  8, // ...defines loss for numerical optimization (multiple loss tensors add up)
         GGML_TENSOR_FLAG_IKQ    = 16, // ...determine to use iqk_mul_mat kernel ported from ik_llama.cpp
-        GGML_TENSOR_FLAG_RES    = 32, // ...determine to use residual model to compensate the result outputs
     };
 
     struct ggml_init_params {
@@ -839,7 +838,6 @@ extern "C" {
     GGML_API void ggml_set_param(struct ggml_tensor * tensor);
     GGML_API void ggml_set_loss(struct ggml_tensor * tensor);
     GGML_API void ggml_set_ikquant(struct ggml_tensor * tensor);
-    GGML_API void ggml_set_residual(struct ggml_tensor * tensor);
 
     //
     // operations on tensors with backpropagation

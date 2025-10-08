@@ -13,17 +13,13 @@ __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, long Ny, long
         int typeB, const void * B, long strideB,
         float * C, long stride_C, int ith, int nth,
         void * params, const uint8_t * act_idx);
-    // act_idx = start_p(4B) | split_p(4B) | num(n10-B) | idx(n10*num-B) | ...
+    // act_idx = start_p(4B) | split_p(4B) | nums(/32) | idxs(0~256)
 
     // the compute plan that needs to be prepared for ggml_graph_compute()
     // since https://github.com/ggml-org/ggml/issues/287
     struct ggml_cplan {
         size_t    work_size; // size of work buffer, calculated by `ggml_graph_plan()`
         uint8_t * work_data; // work buffer, to be allocated by caller before calling to `ggml_graph_compute()`
-        size_t    act_size; // size of parsity activation index buffer, calculated by `ggml_graph_plan()`
-        uint8_t * act_idx; // sparsity activation index buffer, to be allocated by caller before calling to `ggml_graph_compute()`
-        size_t    out_size;
-        float   * out_data;
 
         int n_threads;
         struct ggml_threadpool * threadpool;
