@@ -1419,6 +1419,7 @@ static void quantize_row_q8_KS(const float * GGML_RESTRICT x, void * GGML_RESTRI
         xx = xb;
         int8_t * q8 = y[i].qs;
         int32_t* sum32 = (int32_t*)y[i].bsums;
+        int block_sum_i32 = 0;
         for (int ib = 0; ib < QK_K/32; ++ib) {
             __m256 v0 = _mm256_mul_ps(mul, _mm256_loadu_ps(xx)); xx += 8;
             __m256 v1 = _mm256_mul_ps(mul, _mm256_loadu_ps(xx)); xx += 8;
@@ -1433,6 +1434,7 @@ static void quantize_row_q8_KS(const float * GGML_RESTRICT x, void * GGML_RESTRI
             __m256i i2 = _mm256_cvtps_epi32(v2);
             __m256i i3 = _mm256_cvtps_epi32(v3);
             sum32[ib] = hsum_i32_8(_mm256_add_epi32(_mm256_add_epi32(i0, i1), _mm256_add_epi32(i2, i3)));
+            block_sum_i32 += sum32[ib];
 
             i0 = _mm256_packs_epi32( i0, i1 );
             i2 = _mm256_packs_epi32( i2, i3 );
@@ -1441,6 +1443,7 @@ static void quantize_row_q8_KS(const float * GGML_RESTRICT x, void * GGML_RESTRI
             _mm256_storeu_si256((__m256i *)q8, i0);
             q8 += 32;
         }
+        y[i].sum = d*block_sum_i32; // for weight q8_k dequant
     }
 }
 #endif
