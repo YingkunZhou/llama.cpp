@@ -1,0 +1,298 @@
+#include <cuda_fp16.h>
+#include "exl3.cuh"
+#include "exl3-util.h"
+#include "exl3-util.cuh"
+#include "exl3-ptx.cuh"
+#include "exl3-hadamard_inner.cuh"
+#include "exl3-dq.cuh"
+
+__global__ __launch_bounds__(32)
+static void had_hf_r_128_kernel
+(
+    const half* __restrict__ input_ptr,
+    half* __restrict__ output_ptr,
+    const half* __restrict__ pre_scale,
+    const half* __restrict__ post_scale,
+    float r_scale
+)
+{
+    input_ptr += gridDim.y * 128 * blockIdx.x + blockIdx.y * 128;
+    output_ptr += gridDim.y * 128 * blockIdx.x + blockIdx.y * 128;
+    had_hf_r_128_inner(input_ptr, output_ptr, pre_scale, post_scale, r_scale);
+}
+
+__global__ __launch_bounds__(32)
+static void had_ff_r_128_kernel
+(
+    const float* __restrict__ input_ptr,
+    float* __restrict__ output_ptr,
+    const half* __restrict__ pre_scale,
+    const half* __restrict__ post_scale,
+    float r_scale
+)
+{
+    input_ptr += gridDim.y * 128 * blockIdx.x + blockIdx.y * 128;
+    output_ptr += gridDim.y * 128 * blockIdx.x + blockIdx.y * 128;
+    had_ff_r_128_inner(input_ptr, output_ptr, pre_scale, post_scale, r_scale);
+}
+
+/*
+Row-major matmul using cuBLAS, a @ b -> c
+- if c is float16, operation is float16 @ float16 -> float16
+- if c is float32, operation is float16 @ float16 -> float23
+*/
+static void hgemm
+(
+    ggml_backend_cuda_context & ctx,
+    const half * a_ptr, // input
+    const half * b_ptr, // weight
+    ggml_tensor * c,
+    int size_k
+)
+{
+    //const at::cuda::OptionalCUDAGuard device_guard(a.device());
+    //cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+    cudaStream_t stream = ctx.stream();
+
+    // int size_m = a.size(0);
+    // int size_k = a.size(1);
+    // int size_n = b.size(1);
+    int size_m = c->ne[1];
+    int size_n = c->ne[0];
+
+    //cublasHandle_t cublas_handle = at::cuda::getCurrentCUDABlasHandle();
+    cublasHandle_t cublas_handle = ctx.cublas_handle(ggml_cuda_get_device());
+    cublasSetStream(cublas_handle, stream);
+
+    float alpha_ = 1.0f;
+    float beta_  = 0.0f;
+
+    float* c_ptr = (float*) c->data;
+    cublasGemmEx
+    (
+        cublas_handle,
+        CUBLAS_OP_N, CUBLAS_OP_N,
+        size_n, size_m, size_k,
+        &alpha_, b_ptr, CUDA_R_16F, size_n,
+                 a_ptr, CUDA_R_16F, size_k,
+        &beta_,  c_ptr, CUDA_R_32F, size_n,
+        CUBLAS_COMPUTE_32F,
+        CUBLAS_GEMM_DEFAULT_TENSOR_OP
+    );
+    cuda_check(cudaPeekAtLastError());
+}
+
+template <int K, int cb>
+__global__ __launch_bounds__(256)
+static void reconstruct_kernel
+(
+    half* __restrict__ g_unpacked,
+    const uint16_t* __restrict__ g_packed,
+    uint32_t mult
+)
+{
+    constexpr int packed_size = 256 * K / 16;  // in uint16s
+
+    int t = threadIdx.x;
+    int lane_id = t % 32;
+    int warp_id = t / 32;
+    int k = blockIdx.y;
+    int n = blockIdx.x * 8;
+    int tiles_n = gridDim.x;
+    int blocks_n = tiles_n * 8;
+
+    // Load packed 16*128 tile
+    __shared__ uint32_t s_packed[8][packed_size / 2];
+    g_packed += (k * blocks_n + n) * packed_size;
+    for (int s = t; s < packed_size * 8 / 8; s += 256)
+        ((int4*) s_packed)[t] = ((int4*) g_packed)[t];
+    __syncthreads();
+
+    // Dequant
+    register FragB frag[2];
+    dq_dispatch<K, cb>(s_packed[warp_id], lane_id * 8, frag[0], frag[1], mult);
+
+    // Shuffle from tensor core layout to row major tile
+//    __shared__ half tile[16 * 8 * 16];
+    __shared__ half2 tile[16][8][8];
+
+    half2 n0 = __shfl_down_sync(0xFFFFFFFF, frag[0][0], 4, 32);
+    half2 n1 = __shfl_down_sync(0xFFFFFFFF, frag[0][1], 4, 32);
+    half2 n2 = __shfl_down_sync(0xFFFFFFFF, frag[1][0], 4, 32);
+    half2 n3 = __shfl_down_sync(0xFFFFFFFF, frag[1][1], 4, 32);
+    __syncwarp();
+
+    if (!(lane_id & 4))
+    {
+        half2 m0 = __halves2half2(__low2half(frag[0][0]), __low2half(n0));
+        half2 m1 = __halves2half2(__high2half(frag[0][0]), __high2half(n0));
+        half2 m2 = __halves2half2(__low2half(frag[0][1]), __low2half(n1));
+        half2 m3 = __halves2half2(__high2half(frag[0][1]), __high2half(n1));
+        half2 m4 = __halves2half2(__low2half(frag[1][0]), __low2half(n2));
+        half2 m5 = __halves2half2(__high2half(frag[1][0]), __high2half(n2));
+        half2 m6 = __halves2half2(__low2half(frag[1][1]), __low2half(n3));
+        half2 m7 = __halves2half2(__high2half(frag[1][1]), __high2half(n3));
+        int r0 = (lane_id % 4) * 2;
+        int r1 = r0 + 1;
+        int r2 = r0 + 8;
+        int r3 = r0 + 9;
+        int c0 = lane_id / 8;
+        int c1 = c0 + 4;
+        tile[r0][warp_id][c0] = m0;
+        tile[r1][warp_id][c0] = m1;
+        tile[r2][warp_id][c0] = m2;
+        tile[r3][warp_id][c0] = m3;
+        tile[r0][warp_id][c1] = m4;
+        tile[r1][warp_id][c1] = m5;
+        tile[r2][warp_id][c1] = m6;
+        tile[r3][warp_id][c1] = m7;
+    }
+    __syncthreads();
+
+    // Store unpacked tile
+    int r = t / 16;
+    int c = t % 16;
+    int4* tile_int4 = (reinterpret_cast<int4*> (tile));
+    int4* out_int4 = ((int4*) g_unpacked) + (k * 16 + r) * 2 * blocks_n + n * 2 + c;
+    *out_int4 = tile_int4[t];
+}
+
+#define __(i, cb) reconstruct_kernel<i, cb>
+constexpr auto reconstruct_kernel_instances = std::array
+{
+    __(1, 0), __(2, 0), __(3, 0), __(4, 0), __(5, 0), __(6, 0), __(7, 0), __(8, 0),
+    __(1, 1), __(2, 1), __(3, 1), __(4, 1), __(5, 1), __(6, 1), __(7, 1), __(8, 1),
+    __(1, 2), __(2, 2), __(3, 2), __(4, 2), __(5, 2), __(6, 2), __(7, 2), __(8, 2)
+};
+#undef __
+
+/*
+Reconstruct encoded+packed tensor
+*/
+static void reconstruct
+(
+    ggml_backend_cuda_context & ctx,
+    half * unpacked,
+    const ggml_tensor * packed,
+    int K,
+    uint32_t mcg_mult,
+    uint32_t mul1_mult
+)
+{
+    //const at::cuda::OptionalCUDAGuard device_guard(unpacked.device());
+    //cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+    cudaStream_t stream = ctx.stream();
+
+    GGML_ASSERT(packed->ne[2] == 256 * K / 16);
+
+    int rows = packed->ne[0]/16;
+    int cols = packed->ne[1]/16;
+
+    dim3 blockDim(256);
+    dim3 gridDim(cols / 8, rows);
+
+    int cbi = K - 1;
+    uint32_t mult = 0;
+    if (mcg_mult)
+    {
+        mult = mcg_mult;
+        cbi += 8;
+    }
+    else if (mul1_mult)
+    {
+        mult = mul1_mult;
+        cbi += 16;
+    }
+
+    reconstruct_kernel_instances[cbi]<<<gridDim, blockDim, 0, stream>>>
+    (
+        unpacked,
+        (const uint16_t*) packed->data,
+        mult
+    );
+    cuda_check(cudaPeekAtLastError());
+}
+
+/*
+Compute y = (x.view(-1, 128) @ had_128).view(x.shape)
+Works inplace if y == x
+x and y must be same dtype, either float16 or float32
+*/
+static void had_r_128
+(
+    ggml_backend_cuda_context & ctx,
+    const ggml_tensor * input,
+    void * output,
+    const half * pre_scale,
+    const half * post_scale,
+    float scale
+)
+{
+    //const at::cuda::OptionalCUDAGuard device_guard(input.device());
+    //cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+    cudaStream_t stream = ctx.stream();
+
+    GGML_ASSERT(input->ne[0] % 128 == 0); //TORCH_CHECK_DIV(input, 1, 128);
+    int rows = input->ne[1]; //int rows = input.size(0);
+    int cols = input->ne[0]; //int cols = input.size(1);
+
+    int blocks = cols / 128;
+    float r_scale = scale * 0.088388347648f; // scale / sqrt(128)
+
+    dim3 blockDim(32);
+    dim3 gridDim(rows, blocks);
+
+    if (input->type == GGML_TYPE_F16)
+    {
+        had_hf_r_128_kernel<<<gridDim, blockDim, 0, stream>>>
+        (
+            (const half*) input->data,
+            (half*) output,
+            pre_scale,
+            post_scale,
+            r_scale
+        );
+        cuda_check(cudaPeekAtLastError());
+    }
+
+    else if (input->type == GGML_TYPE_F32)
+    {
+        had_ff_r_128_kernel<<<gridDim, blockDim, 0, stream>>>
+        (
+            (const float*) input->data,
+            (float*) output,
+            pre_scale,
+            post_scale,
+            r_scale
+        );
+        cuda_check(cudaPeekAtLastError());
+    }
+
+    else GGML_ASSERT(false && "unsupported datatype");
+}
+
+void exl3_mmq
+(
+    ggml_backend_cuda_context & ctx,
+    const ggml_tensor * A, // input, should be FP16
+    const ggml_tensor * B, // weight
+    ggml_tensor * C, // output
+    const half * suh_ptr,
+    half * A_had_ptr,
+    const half * svh_ptr,
+    uint32_t mcg_mult,
+    uint32_t mul1_mult
+)
+{
+    int device = ggml_cuda_get_device();
+    GGML_ASSERT(device == 0);
+    GGML_ASSERT(A->type == GGML_TYPE_F16);
+    //alloc w from cuda_pool which stores the dequantized weights
+    ggml_cuda_pool_alloc<half> w(ctx.pool(device));
+    w.alloc(B->ne[0] * B->ne[1]);
+    half * w_ptr = w.ptr;
+    had_r_128(ctx, A, A_had_ptr, suh_ptr, nullptr, 1.0f);
+    reconstruct(ctx, w_ptr, B, B->ne[2]/ggml_blck_size(B->type), mcg_mult, mul1_mult);
+    hgemm(ctx, A_had_ptr, w_ptr, C, B->ne[0]);
+    had_r_128(ctx, C, C->data, nullptr, svh_ptr, 1.0f);
+}

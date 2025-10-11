@@ -599,6 +599,12 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = sizeof(int16_t),
         .is_quantized             = false,
     },
+    [GGML_TYPE_EXL3] = {
+        .type_name                = "exl3",
+        .blck_size                = 16,
+        .type_size                = sizeof(int16_t),
+        .is_quantized             = true,
+    },
     [GGML_TYPE_I32] = {
         .type_name                = "i32",
         .blck_size                = 1,
@@ -1314,6 +1320,7 @@ size_t ggml_nbytes(const struct ggml_tensor * tensor) {
     }
     else {
         nbytes = tensor->nb[1];
+        if (tensor->type == GGML_TYPE_EXL3) return nbytes;
         for (int i = 1; i < GGML_MAX_DIMS; ++i) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
         }
@@ -1763,9 +1770,16 @@ static struct ggml_tensor * ggml_new_tensor_impl(
         view_src   = view_src->view_src;
     }
 
+    const size_t  type_size = ggml_type_size(type);
+    const int64_t blck_size = ggml_blck_size(type);
     size_t data_size = ggml_row_size(type, ne[0]);
+    size_t row_size = data_size;
+    if (type == GGML_TYPE_EXL3) {
+        data_size = type_size * ((ne[0]/blck_size)*(ne[1]/blck_size)*ne[2] + ne[0] + ne[1]);
+    } else {
     for (int i = 1; i < n_dims; i++) {
         data_size *= ne[i];
+    }
     }
 
     GGML_ASSERT(view_src == NULL || data_size == 0 || data_size + view_offs <= ggml_nbytes(view_src));
@@ -1811,10 +1825,18 @@ static struct ggml_tensor * ggml_new_tensor_impl(
         result->ne[i] = ne[i];
     }
 
-    result->nb[0] = ggml_type_size(type);
-    result->nb[1] = ggml_row_size(type, ne[0]);
+    result->nb[0] = type_size;
+    if (type == GGML_TYPE_EXL3) {
+        result->nb[1] = result->nb[0] * (result->ne[0] + result->ne[1] +
+            (result->ne[0]/blck_size)*(result->ne[1]/blck_size)*result->ne[2]);
+        for (int i = 2; i < GGML_MAX_DIMS; i++) {
+            result->nb[i] = result->nb[i - 1];
+        }
+    } else {
+        result->nb[1] = row_size;
     for (int i = 2; i < GGML_MAX_DIMS; i++) {
         result->nb[i] = result->nb[i - 1]*result->ne[i - 1];
+    }
     }
 
     ctx->n_objects++;
@@ -3099,7 +3121,9 @@ struct ggml_tensor * ggml_l2_norm_inplace(
 
 static inline bool ggml_can_mul_mat(const struct ggml_tensor * t0, const struct ggml_tensor * t1) {
     static_assert(GGML_MAX_DIMS == 4, "GGML_MAX_DIMS is not 4 - update this function");
-
+    if (t0->type == GGML_TYPE_EXL3) {
+        return t0->ne[0] == t1->ne[0];
+    }
     return (t0->ne[0]           == t1->ne[0])  &&
            (t1->ne[2]%t0->ne[2] == 0)          && // verify t0 is broadcastable
            (t1->ne[3]%t0->ne[3] == 0);

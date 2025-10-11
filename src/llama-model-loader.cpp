@@ -73,6 +73,7 @@ static std::string llama_model_ftype_name(llama_ftype ftype) {
         case LLAMA_FTYPE_MOSTLY_IQ3_KT:   return "IQ3_KT - 3.125 bpw";
         case LLAMA_FTYPE_MOSTLY_IQ4_KT:   return "IQ4_KT - 4.0 bpw";
         case LLAMA_FTYPE_MOSTLY_IQ2_KL:   return "IQ2_KL - 2.6875 bpw";
+        case LLAMA_FTYPE_MOSTLY_EXL3:     return "EXL3";
 
         default: return "unknown, may not work";
     }
@@ -685,6 +686,7 @@ llama_model_loader::llama_model_loader(
             case GGML_TYPE_IQ5_KS:  ftype = LLAMA_FTYPE_MOSTLY_IQ5_KS;  break;
             case GGML_TYPE_IQ4_KSS: ftype = LLAMA_FTYPE_MOSTLY_IQ4_KSS; break;
             case GGML_TYPE_IQ2_KL:  ftype = LLAMA_FTYPE_MOSTLY_IQ2_KL;  break;
+            case GGML_TYPE_EXL3:    ftype = LLAMA_FTYPE_MOSTLY_EXL3;    break;
             default:
                 {
                     LLAMA_LOG_WARN("%s: unknown type %s\n", __func__, ggml_type_name(type_max));
@@ -794,7 +796,8 @@ const struct ggml_tensor * llama_model_loader::check_tensor_dims(const std::stri
 
     {
         bool is_ok = true;
-        for (size_t i = 0; i < GGML_MAX_DIMS; ++i) {
+        size_t end = cur->type == GGML_TYPE_EXL3? 2: GGML_MAX_DIMS;
+        for (size_t i = 0; i < end; ++i) {
             if ((i < ne.size() && ne[i] != cur->ne[i]) || (i >= ne.size() && cur->ne[i] != 1)) {
                 is_ok = false;
                 break;

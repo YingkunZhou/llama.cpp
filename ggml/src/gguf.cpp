@@ -587,9 +587,17 @@ struct gguf_context * gguf_init_from_file_impl(FILE * file, struct gguf_init_par
 
             // calculate byte offsets given the tensor shape and type
             info.t.nb[0] = type_size;
+            if (info.t.type == GGML_TYPE_EXL3) {
+                info.t.nb[1] = info.t.nb[0] * (info.t.ne[0] + info.t.ne[1] +
+                    (info.t.ne[0]/blck_size)*(info.t.ne[1]/blck_size)*info.t.ne[2]);
+                for (int j = 2; j < GGML_MAX_DIMS; ++j) {
+                    info.t.nb[j] = info.t.nb[j - 1];
+                }
+            } else {
             info.t.nb[1] = ggml_row_size(info.t.type, info.t.ne[0]);
             for (int j = 2; j < GGML_MAX_DIMS; ++j) {
                 info.t.nb[j] = info.t.nb[j - 1]*info.t.ne[j - 1];
+            }
             }
         }
         if (!ok) {

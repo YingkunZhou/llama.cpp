@@ -45,6 +45,7 @@
 #include "ggml-cuda/gla.cuh"
 #include "ggml-cuda/set-rows.cuh"
 #include "ggml.h"
+#include "exl3.cuh"
 
 #include <algorithm>
 #include <array>
@@ -2051,7 +2052,42 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     bool use_batched_cublas_bf16 = src0->type == GGML_TYPE_BF16 && bf16_mma_hardware_available(cc);
     bool use_batched_cublas_f32  = src0->type == GGML_TYPE_F32;
 
-    if (!split && use_mul_mat_vec) {
+    if(src0->type == GGML_TYPE_EXL3) {
+        // Here we only support single GPU device
+        GGML_ASSERT(ggml_cuda_get_device() == 0);
+        cudaStream_t stream = ctx.stream();
+        const int64_t blck_size = ggml_blck_size(src0->type);
+        size_t offset_u = (src0->ne[0]/blck_size)*(src0->ne[1]/blck_size)*src0->ne[2];
+        size_t offset_v = offset_u + src0->ne[0];
+        const half * suh = offset_u < ggml_nbytes(src0)/2? (const half *)src0->data + offset_u : nullptr;
+        const half * svh = offset_v < ggml_nbytes(src0)/2? (const half *)src0->data + offset_v : nullptr;
+        GGML_ASSERT(src1->type == GGML_TYPE_F32);
+        GGML_ASSERT(dst->type  == GGML_TYPE_F32);
+        GGML_ASSERT(src1->ne[1] ==  dst->ne[1]);
+        GGML_ASSERT(src1->ne[0] == src0->ne[0]);
+        GGML_ASSERT( dst->ne[0] == src0->ne[1]);
+
+        ggml_tensor *src1_fp16 = new ggml_tensor();
+        memcpy(src1_fp16, src1, sizeof(ggml_tensor));
+
+        ggml_cuda_pool_alloc<half> src1_as_f16(ctx.pool(ggml_cuda_get_device()));
+        const to_fp16_cuda_t to_fp16_cuda = ggml_get_to_fp16_cuda(src1->type);
+        GGML_ASSERT(to_fp16_cuda != nullptr);
+        size_t ne = src1->ne[0] * src1->ne[1];
+        src1_as_f16.alloc(ne);
+        to_fp16_cuda(src1->data, src1_as_f16.get(), ne, ctx.stream());
+        src1_fp16->data = src1_as_f16.get();
+        src1_fp16->type = GGML_TYPE_F16;
+
+        ggml_cuda_pool_alloc<half> xh(ctx.pool(ggml_cuda_get_device()));
+        xh.alloc(src1->ne[0] * src1->ne[1]);
+        if (src1->ne[1] < 32) {
+            exl3_mmvq(ctx, src1_fp16, src0, dst, suh, xh.get(), svh, 0, 0);
+        }
+        else {
+            exl3_mmq(ctx, src1_fp16, src0, dst, suh, xh.get(), svh, 0, 0);
+        }
+    } else if (!split && use_mul_mat_vec) {
         // the custom F16 vector kernel can be used over batched cuBLAS GEMM
         // but this is only faster for GPUs without tensor cores or with a thin src0 matrix (particularly KQV in attention)
         ggml_cuda_mul_mat_vec(ctx, src0, src1, nullptr, dst);
@@ -3267,6 +3303,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                     case GGML_TYPE_IQ5_K:
                     case GGML_TYPE_IQ6_K:
                     case GGML_TYPE_IQ2_KL:
+                    case GGML_TYPE_EXL3:
                         return true;
                     default:
                         return false;
