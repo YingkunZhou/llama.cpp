@@ -3226,7 +3226,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq2_kt * bxi = (const block_iq2_kt *)(x + sizeof(float)) + kbx0 + i*stride;
+        const block_iq2_kt * bxi = (const block_iq2_kt *)(x + i*stride + sizeof(float)) + kbx0;
 
         int ib32 = kqsx/4;
         int j    = kqsx%4;
@@ -3303,7 +3303,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq3_kt * bxi = (const block_iq3_kt *)(x + sizeof(float)) + kbx0 + i*stride;
+        const block_iq3_kt * bxi = (const block_iq3_kt *)(x + i*stride + sizeof(float)) + kbx0;
 
         int ib32 = kqsx/4;
         int j    = kqsx%4;
@@ -3386,7 +3386,7 @@ template <int mmq_y, int nwarps, bool need_check> static __device__ __forceinlin
             i = min(i, i_max);
         }
 
-        const block_iq4_kt * bxi = (const block_iq4_kt *)(x + sizeof(float)) + kbx0 + i*stride;
+        const block_iq4_kt * bxi = (const block_iq4_kt *)(x + i*stride + sizeof(float)) + kbx0;
 
         int ib32 = kqsx/4;
         int j    = kqsx%4;
@@ -3536,6 +3536,24 @@ struct TypeInfo<GGML_TYPE_IQ2_KL> {
     static constexpr size_t block_size = sizeof(block_iq2_kl);
     static constexpr size_t float_size = sizeof(half);
 };
+
+template<>
+struct TypeInfo<GGML_TYPE_IQ2_KT> {
+    static constexpr size_t block_size = sizeof(block_iq2_kt);
+    static constexpr size_t float_size = sizeof(float);
+};
+
+template<>
+struct TypeInfo<GGML_TYPE_IQ3_KT> {
+    static constexpr size_t block_size = sizeof(block_iq3_kt);
+    static constexpr size_t float_size = sizeof(float);
+};
+
+template<>
+struct TypeInfo<GGML_TYPE_IQ4_KT> {
+    static constexpr size_t block_size = sizeof(block_iq4_kt);
+    static constexpr size_t float_size = sizeof(float);
+};
 template <ggml_type type, int mmq_x, int nwarps, bool need_check, bool fixup>
 static __device__ __forceinline__ void mul_mat_q_process_tile(
         const char * __restrict__ x, const int offset_x, const int * __restrict__ y,
@@ -3564,8 +3582,9 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
     float sum[mmq_x*mmq_y / (nwarps*WARP_SIZE)] = {0.0f};
 
     for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
-        if constexpr (type == GGML_TYPE_IQ2_KS || type == GGML_TYPE_IQ3_KS ||
-                      type == GGML_TYPE_IQ4_KS || type == GGML_TYPE_IQ5_KS || type == GGML_TYPE_IQ2_KL) {
+        if constexpr (type == GGML_TYPE_IQ2_KS || type == GGML_TYPE_IQ2_KL ||
+                      type == GGML_TYPE_IQ3_KS || type == GGML_TYPE_IQ4_KS || type == GGML_TYPE_IQ5_KS ||
+                      type == GGML_TYPE_IQ2_KT || type == GGML_TYPE_IQ3_KT || type == GGML_TYPE_IQ4_KT) {
             const int iqks_stride = stride_row_x * TypeInfo<type>::block_size + TypeInfo<type>::float_size;
             load_tiles(x + iqks_stride*(offset_x/stride_row_x), tile_x, kb0, tile_x_max_i, iqks_stride);
         }
