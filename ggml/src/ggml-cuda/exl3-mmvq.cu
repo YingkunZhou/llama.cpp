@@ -789,6 +789,29 @@ fp_exl3_gemm_kernel tfp_exl3_gemm_kernel_fp32_b2[] = {
 fp_exl3_gemm_kernel tfp_exl3_gemm_kernel_fp32_b3[] = {
     // cb = 0
     nullptr,
+    exl3_gemm_kernel<3, true, 0, EXL3_GEMM_SHAPE_1>,
+    exl3_gemm_kernel<3, true, 0, EXL3_GEMM_SHAPE_2>,
+    exl3_gemm_kernel<3, true, 0, EXL3_GEMM_SHAPE_3>,
+    exl3_gemm_kernel<3, true, 0, EXL3_GEMM_SHAPE_4>,
+
+    // cb = 1
+    nullptr,
+    exl3_gemm_kernel<3, true, 1, EXL3_GEMM_SHAPE_1>,
+    exl3_gemm_kernel<3, true, 1, EXL3_GEMM_SHAPE_2>,
+    exl3_gemm_kernel<3, true, 1, EXL3_GEMM_SHAPE_3>,
+    exl3_gemm_kernel<3, true, 1, EXL3_GEMM_SHAPE_4>,
+
+    // cb = 2
+    nullptr,
+    exl3_gemm_kernel<3, true, 2, EXL3_GEMM_SHAPE_1>,
+    exl3_gemm_kernel<3, true, 2, EXL3_GEMM_SHAPE_2>,
+    exl3_gemm_kernel<3, true, 2, EXL3_GEMM_SHAPE_3>,
+    exl3_gemm_kernel<3, true, 2, EXL3_GEMM_SHAPE_4>
+};
+
+fp_exl3_gemm_kernel tfp_exl3_gemm_kernel_fp32_b4[] = {
+    // cb = 0
+    nullptr,
     exl3_gemm_kernel<4, true, 0, EXL3_GEMM_SHAPE_1>,
     exl3_gemm_kernel<4, true, 0, EXL3_GEMM_SHAPE_2>,
     exl3_gemm_kernel<4, true, 0, EXL3_GEMM_SHAPE_3>,
@@ -809,43 +832,19 @@ fp_exl3_gemm_kernel tfp_exl3_gemm_kernel_fp32_b3[] = {
     exl3_gemm_kernel<4, true, 2, EXL3_GEMM_SHAPE_4>
 };
 
-fp_exl3_gemm_kernel tfp_exl3_gemm_kernel_fp32_b4[] = {
-    // cb = 0
-    nullptr,
-    exl3_gemm_kernel<2, true, 0, EXL3_GEMM_SHAPE_1>,
-    exl3_gemm_kernel<2, true, 0, EXL3_GEMM_SHAPE_2>,
-    exl3_gemm_kernel<2, true, 0, EXL3_GEMM_SHAPE_3>,
-    exl3_gemm_kernel<2, true, 0, EXL3_GEMM_SHAPE_4>,
-
-    // cb = 1
-    nullptr,
-    exl3_gemm_kernel<2, true, 1, EXL3_GEMM_SHAPE_1>,
-    exl3_gemm_kernel<2, true, 1, EXL3_GEMM_SHAPE_2>,
-    exl3_gemm_kernel<2, true, 1, EXL3_GEMM_SHAPE_3>,
-    exl3_gemm_kernel<2, true, 1, EXL3_GEMM_SHAPE_4>,
-
-    // cb = 2
-    nullptr,
-    exl3_gemm_kernel<2, true, 2, EXL3_GEMM_SHAPE_1>,
-    exl3_gemm_kernel<2, true, 2, EXL3_GEMM_SHAPE_2>,
-    exl3_gemm_kernel<2, true, 2, EXL3_GEMM_SHAPE_3>,
-    exl3_gemm_kernel<2, true, 2, EXL3_GEMM_SHAPE_4>
-};
-
 static fp_exl3_gemm_kernel select_exl3_gemm_kernel
 (
     int cc,
     int size_k,
     int size_n,
     int bits,
-    int force_shape_idx,
     int* out_block_dim,
     int* out_shape_idx,
     int* num_sms,
     int cb
 )
 {
-    int shape_idx = force_shape_idx <= 0 ? select_gemm_shape(cc, size_k, size_n, bits, false) : force_shape_idx;
+    int shape_idx = select_gemm_shape(cc, size_k, size_n, bits, false);
 
     GGML_ASSERT(shape_idx > 0); // "exl3_gemm: no compatible kernel"
     if (out_shape_idx) *out_shape_idx = shape_idx;
@@ -982,7 +981,7 @@ int exl3_mmvq
     fp_exl3_gemm_kernel kernel = select_exl3_gemm_kernel
     (
         cc, size_k, size_n, bits,
-        -1, &block_dim, &selected_shape,
+        &block_dim, &selected_shape,
         &num_sms, cb
     );
     if (!kernel) return 0;

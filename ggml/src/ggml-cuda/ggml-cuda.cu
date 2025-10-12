@@ -2058,9 +2058,11 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         cudaStream_t stream = ctx.stream();
         const int64_t blck_size = ggml_blck_size(src0->type);
         size_t offset_u = (src0->ne[0]/blck_size)*(src0->ne[1]/blck_size)*src0->ne[2];
+        GGML_ASSERT(offset_u < ggml_nbytes(src0)/2);
+        const half * suh_ptr = (const half *)src0->data + offset_u;
         size_t offset_v = offset_u + src0->ne[0];
-        const half * suh = offset_u < ggml_nbytes(src0)/2? (const half *)src0->data + offset_u : nullptr;
-        const half * svh = offset_v < ggml_nbytes(src0)/2? (const half *)src0->data + offset_v : nullptr;
+        GGML_ASSERT(offset_v < ggml_nbytes(src0)/2);
+        const half * svh_ptr = (const half *)src0->data + offset_v;
         GGML_ASSERT(src1->type == GGML_TYPE_F32);
         GGML_ASSERT(dst->type  == GGML_TYPE_F32);
         GGML_ASSERT(src1->ne[1] ==  dst->ne[1]);
@@ -2081,11 +2083,12 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
 
         ggml_cuda_pool_alloc<half> xh(ctx.pool(ggml_cuda_get_device()));
         xh.alloc(src1->ne[0] * src1->ne[1]);
+        half * A_had_ptr = xh.get();
         if (src1->ne[1] < 32) {
-            exl3_mmvq(ctx, src1_fp16, src0, dst, suh, xh.get(), svh, 0, 0);
+            exl3_mmvq(ctx, src1_fp16, src0, dst, suh_ptr, A_had_ptr, svh_ptr, 0, 0);
         }
         else {
-            exl3_mmq(ctx, src1_fp16, src0, dst, suh, xh.get(), svh, 0, 0);
+            exl3_mmq(ctx, src1_fp16, src0, dst, suh_ptr, A_had_ptr, svh_ptr, 0, 0);
         }
     } else if (!split && use_mul_mat_vec) {
         // the custom F16 vector kernel can be used over batched cuBLAS GEMM
