@@ -679,7 +679,7 @@ static void iq2kt_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *in
 
     __m256  accd[nrc_y];
     const block_q8_2_x4 * y[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) y[iy] = (const block_q8_2_x4 *)info->cy + (info->cur_y + iy)*info->by;
+    for (int iy = 0; iy < nrc_y; ++iy) y[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
 
     __m256i  xv[4], dot[4];
     __m256   scales[2];
@@ -751,7 +751,7 @@ static void iq3kt_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *in
 
     __m256  accd[nrc_y];
     const block_q8_2_x4 * y[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) y[iy] = (const block_q8_2_x4 *)info->cy + (info->cur_y + iy)*info->by;
+    for (int iy = 0; iy < nrc_y; ++iy) y[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
 
     __m256i  xv[4], sv[4], dot[4];
     __m256   scales[2];
@@ -829,7 +829,7 @@ static void iq4kt_mul_mat(int n, const void * vx, size_t bx, struct DataInfo *in
 
     __m256  accd[nrc_y];
     const block_q8_2_x4 * y[nrc_y];
-    for (int iy = 0; iy < nrc_y; ++iy) y[iy] = (const block_q8_2_x4 *)info->cy + (info->cur_y + iy)*info->by;
+    for (int iy = 0; iy < nrc_y; ++iy) y[iy] = (const block_q8_2_x4 *)(info->cy + (info->cur_y + iy)*info->by);
 
     uint32_t values[64];
     __m256i  xv[4], dot[4];
