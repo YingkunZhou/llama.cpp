@@ -665,8 +665,9 @@ int main(int argc, char ** argv) {
     GGML_ASSERT(params.cpuparams.n_threads == params.speculative.cpuparams.n_threads);
     GGML_ASSERT(params.cpuparams_batch.n_threads == params.speculative.cpuparams_batch.n_threads);
     // load the residual model
-    llama_model_params residual_model_params = llama_model_default_params();
+    llama_model_params residual_model_params = common_model_params_to_llama(params);
     residual_model_params.use_as_residual = true;
+    residual_model_params.n_gpu_layers = params.speculative.n_gpu_layers;
     params.model_res = llama_model_load_from_file(params.speculative.model.path.c_str(), residual_model_params);
     GGML_ASSERT(params.model_res);
     // load the draft model

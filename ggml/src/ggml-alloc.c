@@ -852,12 +852,16 @@ static void ggml_gallocr_init_tensor(ggml_gallocr_t galloc, struct ggml_tensor *
             addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], quanted_input);
             ggml_backend_tensor_alloc(cpu_buffer, res_tensor->src[2], addr);
             if (galloc->n_buffers == 2) {
-                struct ggml_tensor * res_node_cuda = res_tensor->residual;
+                struct ggml_tensor * res_tensor_cuda = res_tensor->residual;
                 ggml_backend_buffer_t cuda_buffer = galloc->residual_bufs[0];
                 base = (char *) ggml_backend_buffer_get_base(cuda_buffer);
-                ggml_backend_tensor_alloc(cuda_buffer, res_node_cuda, base);
+                ggml_backend_tensor_alloc(cuda_buffer, res_tensor_cuda, base);
                 addr = base + galloc->residual_offset;
-                ggml_backend_tensor_alloc(cuda_buffer, res_node_cuda->src[0], addr);
+                ggml_backend_tensor_alloc(cuda_buffer, res_tensor_cuda->src[0], addr);
+                quanted_input = res_tensor_cuda->src[1];
+                ggml_backend_tensor_alloc(cuda_buffer, quanted_input, addr);
+                addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], quanted_input);
+                ggml_backend_tensor_alloc(cuda_buffer, res_tensor_cuda->src[2], addr);
             }
         }
     }

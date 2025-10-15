@@ -894,6 +894,7 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
     sched->n_graph_inputs = 0;
     sched->is_reset = false;
 
+    ggml_context * zyk_ctx = graph_ctx ? (ggml_context *)graph_ctx : sched->ctx;
     if (!graph_ctx) {
     struct ggml_init_params params = {
         /* .mem_size =   */ sched->context_buffer_size,
@@ -1137,18 +1138,13 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
             struct ggml_tensor * node = graph->nodes[i];
             struct ggml_tensor * res_node = node->residual;
             if (res_node && sched->n_backends == 2) {
-                struct ggml_tensor * wight = res_node->src[0];
+                res_node->residual = ggml_dup_tensor_layout(zyk_ctx, res_node);
                 struct ggml_tensor * res_node_cuda = res_node->residual;
-                if (graph_ctx) {
-                    res_node_cuda = ggml_dup_tensor_layout((ggml_context *)graph_ctx, res_node);
-                    // consider copy residual weight to CUDA buffer
-                    res_node_cuda->src[0] = ggml_dup_tensor_layout((ggml_context *)graph_ctx, wight);
-                } else {
-                    res_node_cuda = ggml_dup_tensor_layout(sched->ctx, res_node);
-                    // consider copy residual weight to CUDA buffer
-                    res_node_cuda->src[0] = ggml_dup_tensor_layout(sched->ctx, wight);
-                }
-                res_node_cuda->src[1] = node->src[1];
+                // consider copy residual weight to CUDA buffer
+                res_node_cuda->src[0] = ggml_dup_tensor_layout(zyk_ctx, res_node->src[0]); // residual_wight
+                // consider copy quanted input & active bitmask to Host buffer
+                res_node_cuda->src[1] = ggml_dup_tensor_layout(zyk_ctx, res_node->src[1]); // quanted_input
+                res_node_cuda->src[2] = ggml_dup_tensor_layout(zyk_ctx, res_node->src[2]); // active_bitmask
             }
 
             if (ggml_is_view_op(node->op)) {
@@ -1233,16 +1229,14 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
                             if (c == sched->cur_copy) {
                                 tensor_copy = src; // use the original tensor as the current copy
                             } else {
-                                if (graph_ctx) {
-                                tensor_copy = ggml_dup_tensor_layout((ggml_context *)graph_ctx, src);
+                                tensor_copy = ggml_dup_tensor_layout(zyk_ctx, src);
 #if USE_GRAPH_CTX
-                                int n_inputs_cpy = split->n_inputs_cpy++;
-                                GGML_ASSERT(n_inputs_cpy < GGML_SCHED_MAX_SPLIT_INPUTS);
-                                split->inputs_cpy[n_inputs_cpy] = tensor_copy;
-#endif
-                                } else {
-                                tensor_copy = ggml_dup_tensor_layout(sched->ctx, src);
+                                if (graph_ctx) {
+                                    int n_inputs_cpy = split->n_inputs_cpy++;
+                                    GGML_ASSERT(n_inputs_cpy < GGML_SCHED_MAX_SPLIT_INPUTS);
+                                    split->inputs_cpy[n_inputs_cpy] = tensor_copy;
                                 }
+#endif
                                 ggml_format_name(tensor_copy, "%s#%s#%d", ggml_backend_name(backend), src->name, c);
                             }
                             if (sched->n_copies > 1) {
@@ -1263,17 +1257,14 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
                     if (tensor_id_copy(src_id, cur_backend_id, 0) == NULL) {
                         ggml_backend_t backend = sched->backends[cur_backend_id];
                         for (int c = 0; c < sched->n_copies; c++) {
-                            struct ggml_tensor *tensor_copy;
-                            if (graph_ctx) {
-                            tensor_copy = ggml_dup_tensor_layout((ggml_context *)graph_ctx, src);
+                            struct ggml_tensor *tensor_copy = ggml_dup_tensor_layout(zyk_ctx, src);
 #if USE_GRAPH_CTX
-                            int n_inputs_cpy = split->n_inputs_cpy++;
-                            GGML_ASSERT(n_inputs_cpy < GGML_SCHED_MAX_SPLIT_INPUTS);
-                            split->inputs_cpy[n_inputs_cpy] = tensor_copy;
-#endif
-                            } else {
-                            tensor_copy = ggml_dup_tensor_layout(sched->ctx, src);
+                            if (graph_ctx) {
+                                int n_inputs_cpy = split->n_inputs_cpy++;
+                                GGML_ASSERT(n_inputs_cpy < GGML_SCHED_MAX_SPLIT_INPUTS);
+                                split->inputs_cpy[n_inputs_cpy] = tensor_copy;
                             }
+#endif
                             ggml_format_name(tensor_copy, "%s#%s#%d", ggml_backend_name(backend), src->name, c);
                             if (sched->n_copies > 1) {
                                 ggml_set_input(tensor_copy);
@@ -1335,9 +1326,7 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
             struct ggml_tensor * input_cpy = tensor_id_copy(input_id, split->backend_id, sched->cur_copy);
 
             // add a dependency to the input source so that it is not freed before the copy is done
-            struct ggml_tensor * input_dep;
-            if (graph_ctx) input_dep = ggml_view_tensor((ggml_context *)graph_ctx, input);
-            else input_dep = ggml_view_tensor(sched->ctx, input);
+            struct ggml_tensor * input_dep = ggml_view_tensor(zyk_ctx, input);
             input_dep->src[0] = input;
             sched->node_backend_ids[graph_copy->n_nodes] = sched->hv_tensor_backend_ids[input_id];
             graph_copy->nodes[graph_copy->n_nodes++] = input_dep;

@@ -1995,6 +1995,23 @@ static void ggml_cuda_mul_mat_batched_cublas(ggml_backend_cuda_context & ctx, co
     }
 }
 
+__global__ void print_tensor_kernel(float* data, int n) {
+    int idx = threadIdx.x + blockIdx.x * blockDim.x;
+    if (idx < n && data[idx]!= 0.0f) {
+        printf("GPU[%d]: %f\n", idx, data[idx]);
+    }
+}
+
+__global__ void vectorAdd(float* A, const float* B, int n) {
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (i < n) {
+        // if(B[i] != 0.0f) // Only add if B[i] is not zero
+        // printf("Adding at index %d: %f + %f\n", i, A[i], B[i]);
+        A[i] = A[i] + B[i];
+    }
+}
+
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     const bool split = ggml_backend_buft_is_cuda_split(src0->buffer->buft);
 
@@ -2110,6 +2127,23 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
     } else {
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_cublas, nullptr);
+    }
+
+    if(dst->residual) {
+        ggml_tensor * res_tensor = dst->residual;
+        ggml_tensor * res_src0 = res_tensor->src[0];
+        ggml_tensor * res_src1 = dst->src[1];
+        //TODO: ASSERT
+        if (use_mul_mat_vec_q) {
+            ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, res_tensor, ggml_cuda_op_mul_mat_vec_q, quantize_row_q8_1_cuda);
+        } else { // if (use_mul_mat_q) {
+            ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, res_tensor, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
+        }
+
+        // print_tensor_kernel<<<dst->ne[0] * dst->ne[1] / 256, 256, 0, ctx.stream()>>>((float*)res_src1->data, res_src1->ne[0] * res_src1->ne[1]);
+        int threadsPerBlock = 256;
+        int blocksPerGrid = (dst->ne[0] * dst->ne[1] + threadsPerBlock - 1) / threadsPerBlock;
+        vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, ctx.stream()>>>((float *)dst->data, (const float *)res_tensor->data, dst->ne[0] * dst->ne[1]);
     }
 }
 
