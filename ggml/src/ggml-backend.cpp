@@ -894,7 +894,6 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
     sched->n_graph_inputs = 0;
     sched->is_reset = false;
 
-    ggml_context * zyk_ctx = graph_ctx ? (ggml_context *)graph_ctx : sched->ctx;
     if (!graph_ctx) {
     struct ggml_init_params params = {
         /* .mem_size =   */ sched->context_buffer_size,
@@ -1115,6 +1114,7 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
         }
     }
 
+    ggml_context * zyk_ctx = graph_ctx ? (ggml_context *)graph_ctx : sched->ctx;
     // pass 5: split graph, find tensors that need to be copied
     {
         int i_split = 0;
