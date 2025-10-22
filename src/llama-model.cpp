@@ -338,12 +338,15 @@ static buft_list_t make_cpu_buft_list(const std::vector<ggml_backend_dev_t> & de
     }
 
     // add the CPU buffer type
+    buft_list.emplace_back(cpu_dev, ggml_backend_dev_buffer_type(cpu_dev));
+#if 0
     for (size_t i = 0; i < ggml_backend_dev_count(); ++i) {
         ggml_backend_dev_t dev = ggml_backend_dev_get(i);
         if (ggml_backend_dev_type(dev) == GGML_BACKEND_DEVICE_TYPE_CPU) {
             buft_list.emplace_back(dev, ggml_backend_dev_buffer_type(dev));
         }
     }
+#endif
 
     return buft_list;
 }

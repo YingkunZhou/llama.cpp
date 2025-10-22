@@ -188,3 +188,97 @@ void quantize_mmq_q8_1_cuda(
             break;
     }
 }
+
+__global__ void quantize_q8_KS(const float* __restrict__ x,
+                                block_q8_K* __restrict__ y,
+                                int64_t k) {
+    const int block_idx = blockIdx.x;
+    const int warp_id = threadIdx.x / 32;
+    const int lane_id = threadIdx.x % 32;
+    const int num_warps = blockDim.x / 32;
+
+    const float* xb = x + block_idx * QK_K;
+    block_q8_K* y_block = y + block_idx;
+
+    float local_max = 0.0f;
+    for (int i = warp_id * 32 + lane_id; i < QK_K; i += num_warps * 32) {
+        float abs_val = fabsf(xb[i]);
+        if (abs_val > local_max) {
+            local_max = abs_val;
+        }
+    }
+
+    for (int offset = 16; offset > 0; offset /= 2) {
+        float other = __shfl_down_sync(0xFFFFFFFF, local_max, offset);
+        if (other > local_max) local_max = other;
+    }
+
+    __shared__ float warp_max[32];
+    if (lane_id == 0) {
+        warp_max[warp_id] = local_max;
+    }
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        float global_max = 0.0f;
+        for (int i = 0; i < num_warps; i++) {
+            if (warp_max[i] > global_max) {
+                global_max = warp_max[i];
+            }
+        }
+        y_block->d = global_max / 127.0f;
+        warp_max[0] = global_max;
+    }
+    __syncthreads();
+
+    float maxAbs = warp_max[0];
+    const float id = (maxAbs != 0.0f) ? 127.0f / maxAbs : 0.0f;
+
+    int8_t* q8 = y_block->qs;
+    int32_t* sum32 =(int32_t*) y_block->bsums;
+
+    for (int group = warp_id; group < QK_K/32; group += num_warps) {
+        const float* group_start = xb + group * 32;
+        int group_sum = 0;
+
+        if (lane_id < 32) {
+            float scaled_val = group_start[lane_id] * id;
+
+            int32_t quantized;
+            if (scaled_val >= 0.0f) {
+                quantized = (int32_t)(scaled_val + 0.5f);
+            } else {
+                quantized = (int32_t)(scaled_val - 0.5f);
+            }
+
+            if (quantized > 127) quantized = 127;
+            if (quantized < -127) quantized = -127;
+
+            q8[group * 32 + lane_id] = (int8_t)quantized;
+            group_sum = quantized;
+        }
+
+        for (int offset = 16; offset > 0; offset /= 2) {
+            group_sum += __shfl_down_sync(0xFFFFFFFF, group_sum, offset);
+        }
+
+        if (lane_id == 0) {
+            sum32[group] = group_sum;
+        }
+    }
+
+    if (threadIdx.x == 0) {
+        int total_sum = 0;
+        for (int i = 0; i < QK_K/32; i++) {
+            total_sum += sum32[i];
+        }
+        y_block->sum = y_block->d * total_sum;
+    }
+}
+
+void quantize_fp32_to_q8_KS_cuda(const float * x, void * y, int64_t n, cudaStream_t stream){
+    const int nb = n / QK_K;
+    dim3 blocks(nb);   // each block handles a Q8_K's super block
+    dim3 threads(256); // 256 threads per block
+    quantize_q8_KS<<<blocks, threads, 0, stream>>>(x, (block_q8_K*)y, n);
+};

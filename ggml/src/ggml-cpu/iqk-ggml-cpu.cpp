@@ -3036,6 +3036,7 @@ struct AlignedAtomicInt {
     alignas(CACHE_LINE_SIZE) std::atomic<int> flag;
 };
 AlignedAtomicInt DuoThreadReduce[8];
+AlignedAtomicInt current_chunk;
 
 #define QK_T 256
 #define NSUBS 8
@@ -5464,11 +5465,17 @@ static std::vector<char> & thread_local_work_buffer() {
     return f;
 }
 
+static inline void stealing_barrier(int n_threads) {
+    if (n_threads == 1) {
+        return;
+    }
+    #pragma omp barrier
+}
+
 extern "C" __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, long Ny, long ne00,
         int typeA, const void * A, long strideA,
         int typeB, const void * B, long strideB,
-        float * C, long stride_C, int ith, int nth,
-        void * params, const uint8_t * act_idx) {
+        float * C, long stride_C, int ith, int nth, const uint8_t * act_idx) {
 
     auto etypeA = ggml_type(typeA);
     if (auto dequant_type = iqk_is_dequant_better(etypeA, Ny); dequant_type != etypeA) {
@@ -5523,7 +5530,7 @@ extern "C" __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, lo
         int nsplit = 1;
         if (0 < ngroups%nth && ngroups%nth <= nth/2) nsplit = 2;
         std::atomic<int>* flag = &DuoThreadReduce[ith/2].flag;
-        std::atomic<int>* current_chunk_ptr = reinterpret_cast<std::atomic<int>*>(params);
+        std::atomic<int>* current_chunk_ptr = &current_chunk.flag;
         if (ith == 0) {
             // Every thread starts at ith, so the first unprocessed chunk is nth.  This save a bit of coordination right at the start.
             current_chunk_ptr->store(nth/nsplit, std::memory_order_relaxed);
@@ -5531,9 +5538,7 @@ extern "C" __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, lo
         if (nsplit == 2 && ith%2 == 0) {
             flag->store(0, std::memory_order_relaxed);
         }
-        if (nth != 1) {
-            #pragma omp barrier
-        }
+        stealing_barrier(nth);
         // The first chunk comes from our thread_id, the rest will get auto-assigned.
         int ix = ith/nsplit;
         while (ix < ngroups) {

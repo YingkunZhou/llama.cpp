@@ -561,15 +561,22 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     // here we use ik_llama.cpp kernel to process weight-activation mat mul
     assert(ggml_backend_buffer_get_usage(w->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
     ggml_set_ikquant(res);
-    res->residual = NULL;
     if (cparams.use_res && w->residual) {
         res->residual = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, w->ne[1], cur->ne[1]);
-        res->residual->src[0] = w->residual;
         // TODO: the two tensors' data must be adjacent
-        res->residual->src[1] = ggml_new_tensor(ctx0, GGML_TYPE_Q8_K, 4, cur->ne);
-        // CPU format: 1 cnt per 32 elements, with 2 start point at the beginning of the array
-        // GPU format: bitmask, but each 0/1 use 1B
-        res->residual->src[2] = ggml_new_tensor_1d(ctx0, GGML_TYPE_I8, cur->ne[0]);
+        if (!cur->residual) {
+            // act as quanted input
+            cur->residual = ggml_new_tensor(ctx0, GGML_TYPE_Q8_K, 4, cur->ne);
+            // CPU format: 1 cnt per 32 elements, with 2 start point at the beginning of the array
+            // GPU format: bitmask, but each 0/1 use 1B
+            // cur->residual->extra act as bitmask transfer from GPU to CPU;
+            // we have enough space to store 50% sparsity bitmask in CPU format
+            // and ->src[2] only allocated in CPU backend
+            cur->residual->src[2] = ggml_new_tensor_1d(ctx0, GGML_TYPE_I8, cur->ne[0]);
+        }
+        res->residual->src[0] = w->residual;
+        res->residual->src[1] = cur->residual;
+        res->residual->src[2] = cur->residual->src[2];
     }
 
     for (const auto & lora : *loras) {

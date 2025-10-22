@@ -811,6 +811,7 @@ struct ggml_cuda_graph {
 struct ggml_backend_cuda_context {
     int device;
     std::string name;
+    int n_threads;
     cudaEvent_t copy_event = nullptr;
 
     cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = { { nullptr } };

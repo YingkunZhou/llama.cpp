@@ -133,6 +133,18 @@ if (CUDAToolkit_FOUND)
         list(APPEND CUDA_FLAGS -Werror all-warnings)
     endif()
 
+    if (CUDA_OPENMP)
+        find_package(OpenMP)
+        if (OpenMP_FOUND)
+            target_compile_definitions(ggml-cuda PRIVATE CUDA_USE_OPENMP)
+            set(CUDA_FLAGS -use_fast_math -extended-lambda -fopenmp)
+
+            target_link_libraries(ggml-cuda PRIVATE OpenMP::OpenMP_C OpenMP::OpenMP_CXX)
+        else()
+            message(WARNING "OpenMP not found")
+        endif()
+    endif()
+
     if (GGML_ALL_WARNINGS AND NOT MSVC)
         set(NVCC_CMD ${CMAKE_CUDA_COMPILER} .c)
         if (NOT CMAKE_CUDA_HOST_COMPILER STREQUAL "")

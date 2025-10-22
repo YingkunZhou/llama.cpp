@@ -66,6 +66,10 @@
 #include <stdlib.h>
 #include <string>
 #include <vector>
+#ifdef CUDA_USE_OPENMP
+#include <omp.h>
+#include "ggml-cpu.h"
+#endif
 
 static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
@@ -2128,23 +2132,6 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     } else {
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_cublas, nullptr);
     }
-
-    if(dst->residual) {
-        ggml_tensor * res_tensor = dst->residual;
-        ggml_tensor * res_src0 = res_tensor->src[0];
-        ggml_tensor * res_src1 = dst->src[1];
-        //TODO: ASSERT
-        if (use_mul_mat_vec_q) {
-            ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, res_tensor, ggml_cuda_op_mul_mat_vec_q, quantize_row_q8_1_cuda);
-        } else { // if (use_mul_mat_q) {
-            ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, res_tensor, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
-        }
-
-        // print_tensor_kernel<<<dst->ne[0] * dst->ne[1] / 256, 256, 0, ctx.stream()>>>((float*)res_src1->data, res_src1->ne[0] * res_src1->ne[1]);
-        int threadsPerBlock = 256;
-        int blocksPerGrid = (dst->ne[0] * dst->ne[1] + threadsPerBlock - 1) / threadsPerBlock;
-        vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, ctx.stream()>>>((float *)dst->data, (const float *)res_tensor->data, dst->ne[0] * dst->ne[1]);
-    }
 }
 
 static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
@@ -2290,12 +2277,17 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         nb1, nb2, nb3, stream);
 }
 
-static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
+static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst, int ith, int nth) {
+    ggml_tensor * res_tensor = dst->residual;
+#ifdef CUDA_USE_OPENMP
+    #pragma omp master
+    {
+#endif
     // why is this here instead of mul_mat?
     if (dst->src[0] != nullptr && ggml_backend_buft_is_cuda_split(dst->src[0]->buffer->buft)) {
         ggml_cuda_set_peer_access(dst->src[1]->ne[1], ctx.device);
     }
-
+    bool ok = true;
     switch (dst->op) {
         case GGML_OP_ARGMAX:
             ggml_cuda_argmax(ctx, dst);
@@ -2391,7 +2383,7 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
                     ggml_cuda_op_elu(ctx, dst);
                     break;
                 default:
-                    return false;
+                    ok = false;
             }
             break;
         case GGML_OP_GLU:
@@ -2412,7 +2404,7 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
                     ggml_cuda_op_geglu_quick(ctx, dst);
                     break;
                 default:
-                    return false;
+                    ok = false;
             }
             break;
         case GGML_OP_NORM:
@@ -2557,8 +2549,9 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             ggml_cuda_opt_step_adamw(ctx, dst);
             break;
         default:
-            return false;
+            ok = false;
     }
+    GGML_ASSERT(ok == true);
 
     cudaError_t err = cudaGetLastError();
     if (err != cudaSuccess) {
@@ -2566,6 +2559,51 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         CUDA_CHECK(err);
     }
 
+    if (dst->op == GGML_OP_MUL_MAT && res_tensor &&
+        ggml_backend_buffer_is_cuda(res_tensor->buffer)) {
+        GGML_ASSERT(ggml_cuda_get_device() == 0);
+        ggml_tensor * res_src0 = res_tensor->src[0];
+        ggml_tensor * res_src1 = dst->src[1];
+        //TODO: ASSERT
+        if (res_src1->ne[1] <= MMVQ_MAX_BATCH_SIZE) {
+            ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, res_tensor, ggml_cuda_op_mul_mat_vec_q, quantize_row_q8_1_cuda);
+        } else { // if (use_mul_mat_q)
+            ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, res_tensor, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
+        }
+    }
+#ifdef CUDA_USE_OPENMP
+    } // end omp master
+
+    if (dst->op == GGML_OP_MUL_MAT && res_tensor &&
+        !ggml_backend_buffer_is_cuda(res_tensor->buffer)) {
+        const struct ggml_tensor * src0 = res_tensor->src[0];
+        const struct ggml_tensor * src1 = res_tensor->src[1];
+        const struct ggml_tensor * src2 = res_tensor->src[2];
+        // TODO: add assert
+        iqk_mul_mat(
+            src0->ne[1], src1->ne[1], src0->ne[0],
+            src0->type, (const char *)src0->data, /*strideA*/ src0->nb[1],
+            src1->type, (const char *)src1->data, /*strideB*/ src1->nb[1],
+            (float *)dst->data, /*stride_C*/ res_tensor->nb[1]/sizeof(float),
+            ith, nth, (const uint8_t *)src2->data);
+        #pragma omp barrier
+    }
+#endif
+
+#ifdef CUDA_USE_OPENMP
+    #pragma omp master
+    {
+#endif
+        if (dst->op == GGML_OP_MUL_MAT && res_tensor) {
+            // print_tensor_kernel<<<dst->ne[0] * dst->ne[1] / 256, 256, 0, ctx.stream()>>>((float*)res_src1->data, res_src1->ne[0] * res_src1->ne[1]);
+            int threadsPerBlock = 256;
+            int blocksPerGrid = (dst->ne[0] * dst->ne[1] + threadsPerBlock - 1) / threadsPerBlock;
+            void * res_data = res_tensor->residual ? res_tensor->residual->data : res_tensor->data;
+            vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, ctx.stream()>>>((float *)dst->data, (const float *)res_data, dst->ne[0] * dst->ne[1]);
+        }
+#ifdef CUDA_USE_OPENMP
+    } // end omp master
+#endif
     return true;
 }
 
@@ -2884,6 +2922,7 @@ static bool ggml_cuda_can_fuse(const struct ggml_cgraph * cgraph, int node_idx, 
 
 static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx, ggml_cgraph * cgraph,
     bool & graph_evaluated_or_captured, bool & use_cuda_graph, bool & cuda_graph_update_required) {
+    static bool disable_fusion = (getenv("GGML_CUDA_DISABLE_FUSION") != nullptr);
     // flag used to determine whether it is an integrated_gpu
     const bool integrated = ggml_cuda_info().devices[cuda_ctx->device].integrated;
 
@@ -2891,17 +2930,29 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
         // Only perform the graph execution if CUDA graphs are not enabled, or we are capturing the graph.
         // With the use of CUDA graphs, the execution will be performed by the graph launch.
         if (!use_cuda_graph || cuda_graph_update_required) {
-
+            int ith = 0;
+            int nth = cuda_ctx->n_threads;
+#ifdef CUDA_USE_OPENMP
+            #pragma omp parallel num_threads(nth)
+            {
+            ith = omp_get_thread_num();
+#endif
             for (int i = 0; i < cgraph->n_nodes; i++) {
                 ggml_tensor * node = cgraph->nodes[i];
 
                 if (ggml_is_empty(node) || node->op == GGML_OP_RESHAPE || node->op == GGML_OP_TRANSPOSE || node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_NONE) {
                     continue;
                 }
-
-                static bool disable_fusion = (getenv("GGML_CUDA_DISABLE_FUSION") != nullptr);
                 if (!disable_fusion && ggml_cuda_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL })) {
+#ifdef CUDA_USE_OPENMP
+                #pragma omp master
+                {
+#endif
                     ggml_cuda_op_rms_norm_fused(*cuda_ctx, node, cgraph->nodes[i+1]);
+#ifdef CUDA_USE_OPENMP
+                }
+                // #pragma omp barrier
+#endif
                     i++;
                     continue;
                 }
@@ -2918,12 +2969,15 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
                 GGML_UNUSED(integrated);
 #endif // NDEBUG
 
-                bool ok = ggml_cuda_compute_forward(*cuda_ctx, node);
+                bool ok = ggml_cuda_compute_forward(*cuda_ctx, node, ith, nth);
                 if (!ok) {
                     GGML_LOG_ERROR("%s: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
                 }
                 GGML_ASSERT(ok);
             }
+#ifdef CUDA_USE_OPENMP
+            }
+#endif
         }
 
 #ifdef USE_CUDA_GRAPH
@@ -3730,8 +3784,17 @@ static ggml_backend_feature * ggml_backend_cuda_get_features(ggml_backend_reg_t 
     GGML_UNUSED(reg);
 }
 
+void ggml_backend_cuda_set_cpu_n_threads(ggml_backend_t backend_cuda, int n_threads) {
+    struct ggml_backend_cuda_context * ctx = (struct ggml_backend_cuda_context *)backend_cuda->context;
+    ctx->n_threads = n_threads;
+}
+
 static void * ggml_backend_cuda_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
     GGML_UNUSED(reg);
+    if (strcmp(name, "ggml_backend_set_n_threads") == 0) {
+        ggml_backend_set_n_threads_t fct = ggml_backend_cuda_set_cpu_n_threads;
+        return (void *)fct;
+    }
     if (strcmp(name, "ggml_backend_split_buffer_type") == 0) {
         return (void *)ggml_backend_cuda_split_buffer_type;
     }

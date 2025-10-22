@@ -1515,8 +1515,7 @@ void ggml_compute_forward_mul_mat(
             ne01, ne11, ne00,
             src0->type, (const char *)src0->data, /*strideA*/ nb01,
             vec_dot_type, (const char *)params->wdata, /*strideB*/ nbw1,
-            (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth,
-            &params->threadpool->current_chunk, NULL))
+            (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth, NULL))
             return;
     }
 #if GGML_USE_LLAMAFILE
@@ -1679,17 +1678,14 @@ UseGgmlGemm2:;
 }
 
 static void ggml_compute_forward_residual(
-        const struct ggml_compute_params * params,
-              struct ggml_tensor * dst) {
+    const int ith, const int nth,
+    struct ggml_tensor * dst) {
 
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
     const struct ggml_tensor * src2 = dst->src[2];
 
     GGML_TENSOR_BINARY_OP_LOCALS
-
-    const int ith = params->ith;
-    const int nth = params->nth;
 
     GGML_ASSERT(ne0 == ne01);
     GGML_ASSERT(ne1 == ne11);
@@ -1712,8 +1708,7 @@ static void ggml_compute_forward_residual(
         ne01, ne11, ne00,
         src0->type, (const char *)src0->data, /*strideA*/ nb01,
         src1->type, (const char *)src1->data, /*strideB*/ nb11,
-        (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth,
-        &params->threadpool->current_chunk, (const uint8_t *)src2->data);
+        (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth, (const uint8_t *)src2->data);
 }
 
 // ggml_compute_forward_mul_mat_id
@@ -2113,7 +2108,9 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
                             (float *)((char *) tensor->src[1]->data + i11 * 4*ne10),
                             (void *) ((char *) src1->data + i11 * src1->nb[1]), ne10);
                     }
-                    if (ith == 0 && src0->type == GGML_TYPE_IQ2_KS_T) {
+                    #pragma omp single
+                    {
+                    if (src0->type == GGML_TYPE_IQ2_KS_T) {
                         uint32_t * heads = (uint32_t *) src2->data;
                         uint32_t off = 2 * sizeof(uint32_t);
                         const int STRIDE = 1;
@@ -2129,10 +2126,11 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
                             }
                         }
                     }
-                    ggml_barrier(params->threadpool);
+                    }
+                    // ggml_barrier(params->threadpool); // no needed if use omp single!
                     // if use GPU backend, the above data will be obtained from res_tensor->residual->src[0]
                     // furthermore, res_tensor->residual->src[0] data is quantized from res_tensor->residual->src[1], which is also tensor->src[1];
-                    ggml_compute_forward_residual(params, res_tensor);
+                    ggml_compute_forward_residual(params->ith, params->nth, res_tensor);
                     ggml_barrier(params->threadpool);
                     int64_t size = tensor->ne[0] * tensor->ne[1];
                     assert(size % nth == 0);
