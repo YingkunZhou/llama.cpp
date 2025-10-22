@@ -2278,7 +2278,8 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
 }
 
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst, int ith, int nth) {
-    ggml_tensor * res_tensor = dst->residual;
+    ggml_tensor * dst_res = dst->residual;
+    ggml_tensor * dst_res_cuda = dst_res ? dst_res->residual : NULL;
 #ifdef CUDA_USE_OPENMP
     #pragma omp master
     {
@@ -2559,34 +2560,48 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         CUDA_CHECK(err);
     }
 
-    if (dst->op == GGML_OP_MUL_MAT && res_tensor &&
-        ggml_backend_buffer_is_cuda(res_tensor->buffer)) {
-        GGML_ASSERT(ggml_cuda_get_device() == 0);
-        ggml_tensor * res_src0 = res_tensor->src[0];
-        ggml_tensor * res_src1 = dst->src[1];
-        //TODO: ASSERT
-        if (res_src1->ne[1] <= MMVQ_MAX_BATCH_SIZE) {
-            ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, res_tensor, ggml_cuda_op_mul_mat_vec_q, quantize_row_q8_1_cuda);
-        } else { // if (use_mul_mat_q)
-            ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, res_tensor, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
+    if (dst_res) {
+        if (dst_res_cuda == NULL) {
+            if (dst->op == GGML_OP_MUL_MAT) {
+                GGML_ASSERT(ggml_cuda_get_device() == 0);
+                const ggml_tensor * res_src0 = dst_res->src[0];
+                const ggml_tensor * res_src1 = dst->src[1];
+                //TODO: ASSERT
+                if (res_src1->ne[1] <= MMVQ_MAX_BATCH_SIZE) {
+                    ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, dst_res, ggml_cuda_op_mul_mat_vec_q, quantize_row_q8_1_cuda);
+                } else { // if (use_mul_mat_q)
+                    ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, dst_res, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
+                }
+            } else {
+                // TODO: calculate bitmask
+            }
+        } else if (dst->op != GGML_OP_MUL_MAT) {
+            quantize_fp32_to_q8_KS_cuda(
+                (const float *)dst->data, dst_res_cuda->data,
+                dst->ne[0] * dst->ne[1], ctx.stream());
+            ggml_backend_cuda_buffer_get_tensor(dst_res_cuda->buffer, dst_res_cuda, dst_res->data, 0, ggml_nbytes(dst_res));
+            // TODO: calculate bitmask
         }
     }
 #ifdef CUDA_USE_OPENMP
     } // end omp master
 
-    if (dst->op == GGML_OP_MUL_MAT && res_tensor &&
-        !ggml_backend_buffer_is_cuda(res_tensor->buffer)) {
-        const struct ggml_tensor * src0 = res_tensor->src[0];
-        const struct ggml_tensor * src1 = res_tensor->src[1];
-        const struct ggml_tensor * src2 = res_tensor->src[2];
+    if (dst->op == GGML_OP_MUL_MAT && dst_res && dst_res_cuda) {
+        const ggml_tensor * src0 = dst_res->src[0];
+        const ggml_tensor * src1 = dst_res->src[1];
+        const ggml_tensor * src2 = dst_res->src[2];
         // TODO: add assert
         iqk_mul_mat(
             src0->ne[1], src1->ne[1], src0->ne[0],
             src0->type, (const char *)src0->data, /*strideA*/ src0->nb[1],
             src1->type, (const char *)src1->data, /*strideB*/ src1->nb[1],
-            (float *)dst->data, /*stride_C*/ res_tensor->nb[1]/sizeof(float),
+            (float *)dst_res->data, /*stride_C*/ dst_res->nb[1]/sizeof(float),
             ith, nth, (const uint8_t *)src2->data);
         #pragma omp barrier
+        #pragma omp master
+        {
+            cudaMemcpyAsync((char *)dst_res_cuda->data, dst_res->data, ggml_nbytes(dst_res), cudaMemcpyHostToDevice, ctx.stream());
+        }
     }
 #endif
 
@@ -2594,11 +2609,11 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
     #pragma omp master
     {
 #endif
-        if (dst->op == GGML_OP_MUL_MAT && res_tensor) {
+        if (dst->op == GGML_OP_MUL_MAT && dst_res) {
             // print_tensor_kernel<<<dst->ne[0] * dst->ne[1] / 256, 256, 0, ctx.stream()>>>((float*)res_src1->data, res_src1->ne[0] * res_src1->ne[1]);
             int threadsPerBlock = 256;
             int blocksPerGrid = (dst->ne[0] * dst->ne[1] + threadsPerBlock - 1) / threadsPerBlock;
-            void * res_data = res_tensor->residual ? res_tensor->residual->data : res_tensor->data;
+            void * res_data = dst_res_cuda ? dst_res_cuda->data : dst_res->data;
             vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, ctx.stream()>>>((float *)dst->data, (const float *)res_data, dst->ne[0] * dst->ne[1]);
         }
 #ifdef CUDA_USE_OPENMP
@@ -2948,7 +2963,20 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
                 #pragma omp master
                 {
 #endif
-                    ggml_cuda_op_rms_norm_fused(*cuda_ctx, node, cgraph->nodes[i+1]);
+                    ggml_tensor * mul_tensor = cgraph->nodes[i+1];
+                    ggml_cuda_op_rms_norm_fused(*cuda_ctx, node, mul_tensor);
+                    ggml_tensor * mul_tensor_res = mul_tensor->residual;
+                    if (mul_tensor_res) {
+                        ggml_tensor * mul_tensor_res_cuda = mul_tensor_res->residual;
+                        if (mul_tensor_res_cuda) {
+                            quantize_fp32_to_q8_KS_cuda(
+                                (const float *)mul_tensor->data, mul_tensor_res_cuda->data,
+                                mul_tensor->ne[0]*mul_tensor->ne[1], cuda_ctx->stream());
+                            ggml_backend_cuda_buffer_get_tensor(
+                                mul_tensor_res_cuda->buffer, mul_tensor_res_cuda,
+                                mul_tensor_res->data, 0, ggml_nbytes(mul_tensor_res));
+                        }
+                    }
 #ifdef CUDA_USE_OPENMP
                 }
                 // #pragma omp barrier

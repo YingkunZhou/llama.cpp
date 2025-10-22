@@ -836,60 +836,63 @@ static void ggml_gallocr_init_tensor(ggml_gallocr_t galloc, struct ggml_tensor *
             }
         }
         struct ggml_tensor * res_tensor = tensor->residual;
-        if (res_tensor && res_tensor->src[0] && res_tensor->data == NULL) {
+        if (res_tensor && res_tensor->buffer == NULL && tensor->op == GGML_OP_MUL_MAT) {
             assert(galloc->n_buffers < 3);
-            struct ggml_tensor * r_weight = res_tensor->src[0];
-            struct ggml_tensor * q_input  = res_tensor->src[1];
-            struct ggml_tensor * bitmask  = res_tensor->src[2];
+            struct ggml_tensor * bitmask = res_tensor->src[2];
+            struct ggml_tensor * q_input;
+            // bitmask and q_input address should be adjcent
+            struct ggml_tensor * res_tensor_cuda = res_tensor->residual;
             char * addr;
-            if (!ggml_backend_buffer_is_host(r_weight->buffer)) {
-                ggml_backend_buffer_t cuda_buffer = galloc->residual_bufs[0];
-                addr = (char *) ggml_backend_buffer_get_base(cuda_buffer);
-                ggml_backend_tensor_alloc(cuda_buffer, res_tensor, addr);
+            ggml_backend_buffer_t buffer = galloc->residual_bufs[0];
+            if (galloc->n_buffers == 2 && res_tensor_cuda == NULL) {
+                addr = (char *) ggml_backend_buffer_get_base(buffer);
                 if (bitmask->buffer == NULL) {
-                    addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], res_tensor);
-                    ggml_backend_tensor_alloc(cuda_buffer, bitmask, addr);
-                }
-                return;
-            }
-            // on CPU backend
-            ggml_backend_buffer_t buffer = galloc->residual_bufs[galloc->n_buffers-1];
-            addr = (char *) ggml_backend_buffer_get_base(buffer);
-            ggml_backend_tensor_alloc(buffer, res_tensor, addr);
-            addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], res_tensor);
-            if (bitmask->buffer == NULL) {
-                if (galloc->n_buffers == 2) {
-                    q_input->extra = addr;
-                    addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], bitmask);
-                    ggml_backend_tensor_alloc(buffer, q_input, addr);
-                    addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], q_input);
                     ggml_backend_tensor_alloc(buffer, bitmask, addr);
                 } else {
-                    ggml_backend_tensor_alloc(buffer, bitmask, addr);
-                    addr = addr + 2*ggml_backend_buft_get_alloc_size(galloc->bufts[0], bitmask);
-                    ggml_backend_tensor_alloc(buffer, q_input, addr);
-                }
-            }
-            // on GPU backend
-            if (galloc->n_buffers == 2) {
-                res_tensor = res_tensor->residual;
-                r_weight = res_tensor->src[0];
-                q_input  = res_tensor->src[1];
-                bitmask  = res_tensor->src[2];
-                buffer = galloc->residual_bufs[0];
-                addr = (char *) ggml_backend_buffer_get_base(buffer);
-                ggml_backend_tensor_alloc(buffer, res_tensor, addr);
-                addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], res_tensor);
-                if (bitmask->buffer == NULL) {
-                    q_input->extra = addr;
-                    ggml_backend_tensor_alloc(buffer, bitmask, addr);
+                    GGML_ASSERT(bitmask->data == addr);
                 }
                 addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], bitmask);
-                ggml_backend_tensor_alloc(buffer, r_weight, addr);
+                ggml_backend_tensor_alloc(buffer, res_tensor, addr);
+                return;
+            }
+            // on GPU backend
+            if (res_tensor_cuda) {
+                q_input  = res_tensor_cuda->src[1];
+                addr = (char *) ggml_backend_buffer_get_base(buffer);
+                q_input->extra = addr;
+                addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], bitmask);
                 if (q_input->buffer == NULL) {
                     ggml_backend_tensor_alloc(buffer, q_input, addr);
+                } else {
+                    GGML_ASSERT(q_input->data == addr);
                 }
+                struct ggml_tensor * r_weight = res_tensor_cuda->src[0];
+                ggml_backend_tensor_alloc(buffer, r_weight, addr);
+                addr = addr + MAX(ggml_backend_buft_get_alloc_size(galloc->bufts[0], q_input),
+                                  ggml_backend_buft_get_alloc_size(galloc->bufts[0], r_weight));
+                ggml_backend_tensor_alloc(buffer, res_tensor_cuda, addr);
             }
+            // on CPU backend
+            buffer  = galloc->residual_bufs[galloc->n_buffers-1];
+            q_input = res_tensor->src[1];
+            addr = (char *) ggml_backend_buffer_get_base(buffer);
+            if (res_tensor_cuda) {
+                q_input->extra = addr;
+                addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], bitmask);
+            }
+            if (q_input->buffer == NULL) {
+                ggml_backend_tensor_alloc(buffer, q_input, addr);
+            } else {
+                GGML_ASSERT(q_input->data == addr);
+            }
+            addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], q_input);
+            if (bitmask->buffer == NULL) {
+                ggml_backend_tensor_alloc(buffer, bitmask, addr);
+            } else {
+                GGML_ASSERT(bitmask->data == addr);
+            }
+            addr = addr + ggml_backend_buft_get_alloc_size(galloc->bufts[0], bitmask) * (3 - galloc->n_buffers);
+            ggml_backend_tensor_alloc(buffer, res_tensor, addr);
         }
     }
 }

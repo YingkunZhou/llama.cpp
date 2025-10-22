@@ -2093,52 +2093,6 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
         case GGML_OP_MUL_MAT:
             {
                 ggml_compute_forward_mul_mat(params, tensor);
-                struct ggml_tensor * res_tensor = tensor->residual;
-                if (res_tensor) {
-                    ggml_barrier(params->threadpool);
-                    const int ith = params->ith;
-                    const int nth = params->nth;
-                    const struct ggml_tensor * src0 = res_tensor->src[0];
-                    const struct ggml_tensor * src1 = res_tensor->src[1];
-                    const struct ggml_tensor * src2 = res_tensor->src[2];
-                    int64_t ne10 = src1->ne[0];
-                    GGML_ASSERT(src1->type == GGML_TYPE_Q8_K);
-                    for (int64_t i11 = ith; i11 < src1->ne[1]; i11 += nth) {
-                        quantize_row_q8_KS(
-                            (float *)((char *) tensor->src[1]->data + i11 * 4*ne10),
-                            (void *) ((char *) src1->data + i11 * src1->nb[1]), ne10);
-                    }
-                    #pragma omp single
-                    {
-                    if (src0->type == GGML_TYPE_IQ2_KS_T) {
-                        uint32_t * heads = (uint32_t *) src2->data;
-                        uint32_t off = 2 * sizeof(uint32_t);
-                        const int STRIDE = 1;
-                        heads[0] = off + ne10/32;
-                        heads[1] = heads[0] + ne10/2/STRIDE;
-                        uint8_t * act_idx = (uint8_t *) src2->data;
-                        for (int64_t i = 0; i < ne10/32; ++i) {
-                            act_idx[off++] = 32/STRIDE;
-                        }
-                        for (int64_t i = 0; i < ne10/QK_K; ++i) {
-                            for (int j = 0; j < QK_K; j += STRIDE) {
-                                act_idx[off++] = j;
-                            }
-                        }
-                    }
-                    }
-                    // ggml_barrier(params->threadpool); // no needed if use omp single!
-                    // if use GPU backend, the above data will be obtained from res_tensor->residual->src[0]
-                    // furthermore, res_tensor->residual->src[0] data is quantized from res_tensor->residual->src[1], which is also tensor->src[1];
-                    ggml_compute_forward_residual(params->ith, params->nth, res_tensor);
-                    ggml_barrier(params->threadpool);
-                    int64_t size = tensor->ne[0] * tensor->ne[1];
-                    assert(size % nth == 0);
-                    int64_t ne_per_th = size / nth;
-                    float * data = (float *)tensor->data + ith * ne_per_th;
-                    float * res_data = (float *)res_tensor->data + ith * ne_per_th;
-                    for (int i = 0; i < ne_per_th; ++i) data[i] = data[i] + res_data[i];
-                }
             } break;
         case GGML_OP_MUL_MAT_ID:
             {
@@ -2390,6 +2344,53 @@ static void ggml_compute_forward(struct ggml_compute_params * params, struct ggm
             {
                 GGML_ABORT("fatal error");
             }
+    }
+
+    struct ggml_tensor * res_tensor = tensor->residual;
+    if (tensor->op == GGML_OP_MUL_MAT && res_tensor) {
+        ggml_barrier(params->threadpool);
+        const int ith = params->ith;
+        const int nth = params->nth;
+        const struct ggml_tensor * src0 = res_tensor->src[0];
+        const struct ggml_tensor * src1 = res_tensor->src[1];
+        const struct ggml_tensor * src2 = res_tensor->src[2];
+        int64_t ne10 = src1->ne[0];
+        GGML_ASSERT(src1->type == GGML_TYPE_Q8_K);
+        for (int64_t i11 = ith; i11 < src1->ne[1]; i11 += nth) {
+            quantize_row_q8_KS(
+                (float *)((char *) tensor->src[1]->data + i11 * 4*ne10),
+                (void *) ((char *) src1->data + i11 * src1->nb[1]), ne10);
+        }
+        #pragma omp single
+        {
+            if (src0->type == GGML_TYPE_IQ2_KS_T) {
+                uint32_t * heads = (uint32_t *) src2->data;
+                uint32_t off = 2 * sizeof(uint32_t);
+                const int STRIDE = 1;
+                heads[0] = off + ne10/32;
+                heads[1] = heads[0] + ne10/2/STRIDE;
+                uint8_t * act_idx = (uint8_t *) src2->data;
+                for (int64_t i = 0; i < ne10/32; ++i) {
+                    act_idx[off++] = 32/STRIDE;
+                }
+                for (int64_t i = 0; i < ne10/QK_K; ++i) {
+                    for (int j = 0; j < QK_K; j += STRIDE) {
+                        act_idx[off++] = j;
+                    }
+                }
+            }
+        }
+        // ggml_barrier(params->threadpool); // no needed if use omp single!
+        // if use GPU backend, the above data will be obtained from res_tensor->residual->src[0]
+        // furthermore, res_tensor->residual->src[0] data is quantized from res_tensor->residual->src[1], which is also tensor->src[1];
+        ggml_compute_forward_residual(params->ith, params->nth, res_tensor);
+        ggml_barrier(params->threadpool);
+        int64_t size = tensor->ne[0] * tensor->ne[1];
+        assert(size % nth == 0);
+        int64_t ne_per_th = size / nth;
+        float * data = (float *)tensor->data + ith * ne_per_th;
+        float * res_data = (float *)res_tensor->data + ith * ne_per_th;
+        for (int i = 0; i < ne_per_th; ++i) data[i] = data[i] + res_data[i];
     }
 }
 
