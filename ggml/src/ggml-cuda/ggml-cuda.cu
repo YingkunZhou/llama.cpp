@@ -2277,7 +2277,7 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         nb1, nb2, nb3, stream);
 }
 
-static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst, int ith, int nth) {
+static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
     ggml_tensor * dst_res = dst->residual;
     ggml_tensor * dst_res_cuda = dst_res ? dst_res->residual : NULL;
 #ifdef CUDA_USE_OPENMP
@@ -2575,49 +2575,55 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
             } else {
                 // TODO: calculate bitmask
             }
-        } else if (dst->op != GGML_OP_MUL_MAT) {
-            quantize_fp32_to_q8_KS_cuda(
-                (const float *)dst->data, dst_res_cuda->data,
-                dst->ne[0] * dst->ne[1], ctx.stream());
-            ggml_backend_cuda_buffer_get_tensor(dst_res_cuda->buffer, dst_res_cuda, dst_res->data, 0, ggml_nbytes(dst_res));
-            // TODO: calculate bitmask
+        }
+        else {
+            if (dst->op == GGML_OP_MUL_MAT) {
+                // use CPU OPENMP kernel
+            } else {
+                quantize_fp32_to_q8_KS_cuda(
+                    (const float *)dst->data, dst_res_cuda->data,
+                    dst->ne[0] * dst->ne[1], ctx.stream());
+                // ggml_backend_cuda_buffer_get_tensor(dst_res_cuda->buffer, dst_res_cuda, dst_res->data, 0, ggml_nbytes(dst_res));
+                CUDA_CHECK(cudaMemcpyAsync(dst_res->data, (const char *)dst_res_cuda->data, ggml_nbytes(dst_res), cudaMemcpyDeviceToHost, ctx.stream()));
+                CUDA_CHECK(cudaStreamSynchronize(ctx.stream()));
+                // TODO: calculate bitmask
+            }
         }
     }
 #ifdef CUDA_USE_OPENMP
     } // end omp master
+    #pragma omp barrier
 
-    if (dst->op == GGML_OP_MUL_MAT && dst_res && dst_res_cuda) {
-        const ggml_tensor * src0 = dst_res->src[0];
-        const ggml_tensor * src1 = dst_res->src[1];
-        const ggml_tensor * src2 = dst_res->src[2];
-        // TODO: add assert
-        iqk_mul_mat(
-            src0->ne[1], src1->ne[1], src0->ne[0],
-            src0->type, (const char *)src0->data, /*strideA*/ src0->nb[1],
-            src1->type, (const char *)src1->data, /*strideB*/ src1->nb[1],
-            (float *)dst_res->data, /*stride_C*/ dst_res->nb[1]/sizeof(float),
-            ith, nth, (const uint8_t *)src2->data);
-        #pragma omp barrier
+    if (dst->op == GGML_OP_MUL_MAT && dst_res) {
+        if (dst_res_cuda) {
+            const ggml_tensor * src0 = dst_res->src[0];
+            const ggml_tensor * src1 = dst_res->src[1];
+            const ggml_tensor * src2 = dst_res->src[2];
+            // TODO: add assert
+            iqk_mul_mat(
+                src0->ne[1], src1->ne[1], src0->ne[0],
+                src0->type, (const char *)src0->data, /*strideA*/ src0->nb[1],
+                src1->type, (const char *)src1->data, /*strideB*/ src1->nb[1],
+                (float *)dst_res->data, /*stride_C*/ dst_res->nb[1]/sizeof(float),
+                omp_get_thread_num(), ctx.n_threads, (const uint8_t *)src2->data);
+            #pragma omp barrier
+        }
         #pragma omp master
         {
+#endif
+        void * res_data = dst_res->data;
+        if (dst_res_cuda) {
             cudaMemcpyAsync((char *)dst_res_cuda->data, dst_res->data, ggml_nbytes(dst_res), cudaMemcpyHostToDevice, ctx.stream());
+            res_data = dst_res_cuda->data;
         }
+        // print_tensor_kernel<<<dst->ne[0] * dst->ne[1] / 256, 256, 0, ctx.stream()>>>((float*)res_src1->data, res_src1->ne[0] * res_src1->ne[1]);
+        int threadsPerBlock = 256;
+        int blocksPerGrid = (dst->ne[0] * dst->ne[1] + threadsPerBlock - 1) / threadsPerBlock;
+        vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, ctx.stream()>>>((float *)dst->data, (const float *)res_data, dst->ne[0] * dst->ne[1]);
+#ifdef CUDA_USE_OPENMP
+        }
+        #pragma omp barrier
     }
-#endif
-
-#ifdef CUDA_USE_OPENMP
-    #pragma omp master
-    {
-#endif
-        if (dst->op == GGML_OP_MUL_MAT && dst_res) {
-            // print_tensor_kernel<<<dst->ne[0] * dst->ne[1] / 256, 256, 0, ctx.stream()>>>((float*)res_src1->data, res_src1->ne[0] * res_src1->ne[1]);
-            int threadsPerBlock = 256;
-            int blocksPerGrid = (dst->ne[0] * dst->ne[1] + threadsPerBlock - 1) / threadsPerBlock;
-            void * res_data = dst_res_cuda ? dst_res_cuda->data : dst_res->data;
-            vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, ctx.stream()>>>((float *)dst->data, (const float *)res_data, dst->ne[0] * dst->ne[1]);
-        }
-#ifdef CUDA_USE_OPENMP
-    } // end omp master
 #endif
     return true;
 }
@@ -2945,17 +2951,36 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
         // Only perform the graph execution if CUDA graphs are not enabled, or we are capturing the graph.
         // With the use of CUDA graphs, the execution will be performed by the graph launch.
         if (!use_cuda_graph || cuda_graph_update_required) {
-            int ith = 0;
-            int nth = cuda_ctx->n_threads;
 #ifdef CUDA_USE_OPENMP
-            #pragma omp parallel num_threads(nth)
+            #pragma omp parallel num_threads(cuda_ctx->n_threads)
             {
-            ith = omp_get_thread_num();
 #endif
             for (int i = 0; i < cgraph->n_nodes; i++) {
                 ggml_tensor * node = cgraph->nodes[i];
 
                 if (ggml_is_empty(node) || node->op == GGML_OP_RESHAPE || node->op == GGML_OP_TRANSPOSE || node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_NONE) {
+#ifdef CUDA_USE_OPENMP
+                #pragma omp master
+                {
+#endif
+                    ggml_tensor * node_res = node->residual;
+                    if (node_res) {
+                        ggml_tensor * node_res_cuda = node_res->residual;
+                        if (node_res_cuda) {
+                            quantize_fp32_to_q8_KS_cuda(
+                                (const float *)node->data, node_res_cuda->data,
+                                node->ne[0]*node->ne[1], cuda_ctx->stream());
+                            // ggml_backend_cuda_buffer_get_tensor(
+                            //     node_res_cuda->buffer, node_res_cuda,
+                            //     node_res->data, 0, ggml_nbytes(node_res));
+                            CUDA_CHECK(cudaMemcpyAsync(node_res->data, (const char *)node_res_cuda->data, ggml_nbytes(node_res), cudaMemcpyDeviceToHost, cuda_ctx->stream()));
+                            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
+                        }
+                    }
+#ifdef CUDA_USE_OPENMP
+                }
+                #pragma omp barrier
+#endif
                     continue;
                 }
                 if (!disable_fusion && ggml_cuda_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL })) {
@@ -2969,17 +2994,20 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
                     if (mul_tensor_res) {
                         ggml_tensor * mul_tensor_res_cuda = mul_tensor_res->residual;
                         if (mul_tensor_res_cuda) {
+                            // TODO: to use cudaStreamPerThread?
                             quantize_fp32_to_q8_KS_cuda(
                                 (const float *)mul_tensor->data, mul_tensor_res_cuda->data,
                                 mul_tensor->ne[0]*mul_tensor->ne[1], cuda_ctx->stream());
-                            ggml_backend_cuda_buffer_get_tensor(
-                                mul_tensor_res_cuda->buffer, mul_tensor_res_cuda,
-                                mul_tensor_res->data, 0, ggml_nbytes(mul_tensor_res));
+                            CUDA_CHECK(cudaMemcpyAsync(mul_tensor_res->data, (const char *)mul_tensor_res_cuda->data, ggml_nbytes(mul_tensor_res), cudaMemcpyDeviceToHost, cuda_ctx->stream()));
+                            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
+                            // ggml_backend_cuda_buffer_get_tensor(
+                            //     mul_tensor_res_cuda->buffer, mul_tensor_res_cuda,
+                            //     mul_tensor_res->data, 0, ggml_nbytes(mul_tensor_res));
                         }
                     }
 #ifdef CUDA_USE_OPENMP
                 }
-                // #pragma omp barrier
+                #pragma omp barrier
 #endif
                     i++;
                     continue;
@@ -2997,7 +3025,7 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
                 GGML_UNUSED(integrated);
 #endif // NDEBUG
 
-                bool ok = ggml_cuda_compute_forward(*cuda_ctx, node, ith, nth);
+                bool ok = ggml_cuda_compute_forward(*cuda_ctx, node);
                 if (!ok) {
                     GGML_LOG_ERROR("%s: op not supported %s (%s)\n", __func__, node->name, ggml_op_name(node->op));
                 }
