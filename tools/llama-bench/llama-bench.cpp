@@ -1020,7 +1020,6 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
     // this ordering minimizes the number of times that each model needs to be reloaded
     // clang-format off
     for (const auto & m : params.model)
-    for (const auto & r : params.residual)
     for (const auto & nl : params.n_gpu_layers)
     for (const auto & rpc : params.rpc_servers)
     for (const auto & sm : params.split_mode)
@@ -1042,6 +1041,8 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
     for (const auto & cs : params.cpu_strict)
     for (const auto & nd : params.n_depth)
     for (const auto & pl : params.poll) {
+        // FIXME: very ugly
+        std::string r = params.residual.size() != 0 ? params.residual[0] : "";
         for (const auto & n_prompt : params.n_prompt) {
             if (n_prompt == 0) {
                 continue;
@@ -1903,18 +1904,23 @@ int main(int argc, char ** argv) {
             if (lmodel) {
                 llama_model_free(lmodel);
             }
+            llama_model * rmodel = NULL;
+            if (inst.residual.size() != 0) {
+                llama_model_params residual_model_params = inst.to_llama_mparams();
+                residual_model_params.use_as_residual = true;
+                residual_model_params.n_gpu_layers = 0;
+                rmodel = llama_model_load_from_file(inst.residual.c_str(), residual_model_params);
+            }
 
-            llama_model_params residual_model_params = inst.to_llama_mparams();
-            residual_model_params.use_as_residual = true;
-            residual_model_params.n_gpu_layers = 0;
-            llama_model * rmodel = llama_model_load_from_file(inst.residual.c_str(), residual_model_params);
-            GGML_ASSERT(rmodel);
             lmodel = llama_model_load_from_file(inst.model.c_str(), inst.to_llama_mparams());
             if (lmodel == NULL) {
                 fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
                 return 1;
             }
-            llama_model_append_res(lmodel, rmodel);
+            if (inst.residual.size() != 0) {
+                GGML_ASSERT(rmodel);
+                llama_model_append_res(lmodel, rmodel);
+            }
             prev_inst = &inst;
         }
 
