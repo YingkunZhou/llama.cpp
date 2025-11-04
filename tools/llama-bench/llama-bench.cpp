@@ -237,6 +237,7 @@ static std::vector<int> parse_int_range(const std::string & s) {
 
 struct cmd_params {
     std::vector<std::string>         model;
+    std::vector<std::string>         residual;
     std::vector<int>                 n_prompt;
     std::vector<int>                 n_gen;
     std::vector<std::pair<int, int>> n_pg;
@@ -274,6 +275,7 @@ struct cmd_params {
 
 static const cmd_params cmd_params_defaults = {
     /* model                */ { "models/7B/ggml-model-q4_0.gguf" },
+    /* residual             */ { "" },
     /* n_prompt             */ { 512 },
     /* n_gen                */ { 128 },
     /* n_pg                 */ {},
@@ -447,6 +449,13 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                 }
                 auto p = string_split<std::string>(argv[i], split_delim);
                 params.model.insert(params.model.end(), p.begin(), p.end());
+            } else if (arg == "-r" || arg == "--residual") {
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                auto p = string_split<std::string>(argv[i], split_delim);
+                params.residual.insert(params.residual.end(), p.begin(), p.end());
             } else if (arg == "-p" || arg == "--n-prompt") {
                 if (++i >= argc) {
                     invalid_param = true;
@@ -903,6 +912,7 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
 
 struct cmd_params_instance {
     std::string        model;
+    std::string        residual;
     int                n_prompt;
     int                n_gen;
     int                n_depth;
@@ -998,6 +1008,7 @@ struct cmd_params_instance {
         cparams.embeddings   = embeddings;
         cparams.op_offload   = !no_op_offload;
         cparams.swa_full     = false;
+        cparams.use_res      = residual.size() != 0;
 
         return cparams;
     }
@@ -1009,6 +1020,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
     // this ordering minimizes the number of times that each model needs to be reloaded
     // clang-format off
     for (const auto & m : params.model)
+    for (const auto & r : params.residual)
     for (const auto & nl : params.n_gpu_layers)
     for (const auto & rpc : params.rpc_servers)
     for (const auto & sm : params.split_mode)
@@ -1036,6 +1048,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
             }
             cmd_params_instance instance = {
                 /* .model        = */ m,
+                /* .residual     = */ r,
                 /* .n_prompt     = */ n_prompt,
                 /* .n_gen        = */ 0,
                 /* .n_depth      = */ nd,
@@ -1069,6 +1082,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
             }
             cmd_params_instance instance = {
                 /* .model        = */ m,
+                /* .residual     = */ r,
                 /* .n_prompt     = */ 0,
                 /* .n_gen        = */ n_gen,
                 /* .n_depth      = */ nd,
@@ -1102,6 +1116,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
             }
             cmd_params_instance instance = {
                 /* .model        = */ m,
+                /* .residual     = */ r,
                 /* .n_prompt     = */ n_pg.first,
                 /* .n_gen        = */ n_pg.second,
                 /* .n_depth      = */ nd,
@@ -1889,11 +1904,17 @@ int main(int argc, char ** argv) {
                 llama_model_free(lmodel);
             }
 
+            llama_model_params residual_model_params = inst.to_llama_mparams();
+            residual_model_params.use_as_residual = true;
+            residual_model_params.n_gpu_layers = 0;
+            llama_model * rmodel = llama_model_load_from_file(inst.residual.c_str(), residual_model_params);
+            GGML_ASSERT(rmodel);
             lmodel = llama_model_load_from_file(inst.model.c_str(), inst.to_llama_mparams());
             if (lmodel == NULL) {
                 fprintf(stderr, "%s: error: failed to load model '%s'\n", __func__, inst.model.c_str());
                 return 1;
             }
+            llama_model_append_res(lmodel, rmodel);
             prev_inst = &inst;
         }
 
