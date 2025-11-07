@@ -705,9 +705,6 @@ int main(int argc, char ** argv) {
     struct common_sampler * tgt_smpl = common_sampler_init(model_dft, params.sampling);
     llama_token token_id = common_sampler_sample(tgt_smpl, ctx_dft, n_input - 1);
     LOG("%s", common_token_to_piece(ctx_dft, token_id).c_str());
-    // prepare draft model initial batch
-    llama_batch batch_dft = llama_batch_init(llama_n_batch(ctx_dft), 0, 1);
-    batch_dft.n_tokens = 1;
     // how many tokens to draft each time
     int n_draft = params.speculative.n_max;
     // prepare target model initial batch
@@ -741,10 +738,8 @@ int main(int argc, char ** argv) {
         // from a cache or lookup tables.
         //
         for (int i = 1; i <= n_draft; ++i) {
-            // evaluate the drafted tokens on the draft model
-            // add the token to the batch for batched decoding with the draft model
-            simple_batch_add(batch_dft, 0, token_id, n_token + i - 1);
-            llama_decode(ctx_dft, batch_dft);
+            // draft model always process one token once time
+            llama_decode(ctx_dft, llama_batch_get_one(&token_id, 1));
             // why grammar_first?
             common_sampler_sample(dft_smpl, ctx_dft, 0, true);
             const llama_token_data_array * cur_p = common_sampler_get_candidates(dft_smpl);
@@ -827,7 +822,6 @@ int main(int argc, char ** argv) {
 
     common_sampler_free(tgt_smpl);
     common_sampler_free(dft_smpl);
-    llama_batch_free(batch_dft);
     llama_batch_free(batch_tgt);
     llama_backend_free();
     return 0;
