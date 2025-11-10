@@ -703,6 +703,10 @@ int main(int argc, char ** argv) {
     };
     // target model sampling context (reuse the llama_context's sampling instance)
     struct common_sampler * tgt_smpl = common_sampler_init(model_dft, params.sampling);
+    if (!tgt_smpl) {
+        LOG_ERR("%s: failed to initialize sampling subsystem\n", __func__);
+        return 1;
+    }
     llama_token token_id = common_sampler_sample(tgt_smpl, ctx_dft, n_input - 1);
     LOG("%s", common_token_to_piece(ctx_dft, token_id).c_str());
     // how many tokens to draft each time

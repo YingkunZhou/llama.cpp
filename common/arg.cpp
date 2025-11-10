@@ -1647,6 +1647,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_MAIN}));
     add_opt(common_arg(
+        {"-bm", "--benchmark"}, "FNAME",
+        "a file containing the benchmark prompts (default: none)",
+        [](common_params & params, const std::string & value) {
+            params.benchmark = value;
+        }
+    ).set_excludes({LLAMA_EXAMPLE_COMMON}));
+    add_opt(common_arg(
         {"-i", "--interactive"},
         string_format("run in interactive mode (default: %s)", params.interactive ? "true" : "false"),
         [](common_params & params) {

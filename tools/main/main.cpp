@@ -83,6 +83,24 @@ static void sigint_handler(int signo) {
 }
 #endif
 
+static std::vector<std::string> readBenchmarkQFromFile(const std::string& filename) {
+    std::vector<std::string> result;
+    std::ifstream file(filename);
+    std::string line;
+
+    while (std::getline(file, line)) {
+        // replace "\\n" with '\n'
+        size_t pos = 0;
+        while ((pos = line.find("\\n", pos)) != std::string::npos) {
+            line.replace(pos, 2, "\n");
+            pos += 1;
+        }
+        result.push_back(line);
+    }
+
+    return result;
+}
+
 int main(int argc, char ** argv) {
     common_params params;
     g_params = &params;
@@ -532,6 +550,47 @@ int main(int argc, char ** argv) {
     console::set_display(console::prompt);
     display = params.display_prompt;
 
+    std::vector<std::string> bench_questions;
+    size_t loop_size = 1;
+    if (!params.benchmark.empty()) {
+        params.single_turn = true;
+        params.interactive = false;
+        params.interactive_first = false;
+        params.conversation_mode = COMMON_CONVERSATION_MODE_DISABLED;
+        is_interacting = false;
+        waiting_for_first_input = false;
+        bench_questions = readBenchmarkQFromFile(params.benchmark);
+        loop_size = bench_questions.size();
+        common_chat_msg tmp_msg;
+        chat_msgs.push_back(tmp_msg);
+    }
+
+    for (size_t kk = 0; kk < loop_size; ++kk) {
+        llama_memory_clear(llama_get_memory(ctx), true); // FIXME
+        if (loop_size > 1) {
+            // initial the state
+            n_past             = 0;
+            n_remain           = params.n_predict;
+            n_consumed         = 0;
+            n_session_consumed = 0;
+            // consider the new message
+            common_chat_msg new_msg;
+            new_msg.role = "user";
+            new_msg.content = bench_questions[kk];
+            chat_msgs.back() = new_msg;
+            // construct the new inputs
+            common_chat_templates_inputs inputs;
+            inputs.use_jinja = g_params->use_jinja;
+            inputs.messages = chat_msgs;
+            inputs.add_generation_prompt = true; // TODO: !params.prompt.empty();
+            std::string single_prompt = common_chat_templates_apply(chat_templates.get(), inputs).prompt;
+            if (params.verbose_prompt) {
+                LOG_INF("format prompt question in text_data.txt: \"%s\"\n", single_prompt.c_str());
+            }
+            // TODO: true, true?
+            embd_inp = common_tokenize(ctx, single_prompt, true, true);
+        }
+
     std::vector<llama_token> embd;
 
     // single-token antiprompts
@@ -717,6 +776,7 @@ int main(int argc, char ** argv) {
         } else {
             // some user input remains from prompt or interaction, forward it to processing
             LOG_DBG("embd_inp.size(): %d, n_consumed: %d\n", (int) embd_inp.size(), n_consumed);
+            common_sampler_reset(smpl);
             while ((int) embd_inp.size() > n_consumed) {
                 embd.push_back(embd_inp[n_consumed]);
 
@@ -978,6 +1038,7 @@ int main(int argc, char ** argv) {
         llama_state_save_file(ctx, path_session.c_str(), session_tokens.data(), session_tokens.size());
     }
 
+    }
     LOG("\n\n");
     common_perf_print(ctx, smpl);
 
