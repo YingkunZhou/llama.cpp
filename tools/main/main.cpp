@@ -565,10 +565,19 @@ int main(int argc, char ** argv) {
         chat_msgs.push_back(tmp_msg);
     }
 
-    for (size_t kk = 0; kk < loop_size; ++kk) {
+    for (size_t kk = 0; kk <= loop_size; ++kk) {
+        if (kk > 0 && !params.benchmark.empty()) {
+            const auto data = llama_perf_context(ctx);
+            LOG("prefill time  = %10.2f ms / %5d tokens (%8.2f ms per token, %8.2f tokens per second)\n",
+            data.t_p_eval_ms, data.n_p_eval, data.t_p_eval_ms / data.n_p_eval, 1e3 / data.t_p_eval_ms * data.n_p_eval);
+            LOG("decoding time = %10.2f ms / %5d runs   (%8.2f ms per token, %8.2f tokens per second)\n",
+            data.t_eval_ms, data.n_eval, data.t_eval_ms / data.n_eval, 1e3 / data.t_eval_ms * data.n_eval);
+        }
+        if (kk == loop_size) break;
         llama_memory_clear(llama_get_memory(ctx), true); // FIXME
         if (!params.benchmark.empty()) {
             LOG("\n>>>>>>>>>>>>>>>>>>>> %ld <<<<<<<<<<<<<<<<<<<<\n", kk);
+            llama_perf_context_reset(ctx);
             // initial the state
             n_past             = 0;
             n_remain           = params.n_predict;
