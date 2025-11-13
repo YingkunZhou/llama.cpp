@@ -567,7 +567,8 @@ int main(int argc, char ** argv) {
 
     for (size_t kk = 0; kk < loop_size; ++kk) {
         llama_memory_clear(llama_get_memory(ctx), true); // FIXME
-        if (loop_size > 1) {
+        if (!params.benchmark.empty()) {
+            LOG("\n>>>>>>>>>>>>>>>>>>>> %ld <<<<<<<<<<<<<<<<<<<<\n", kk);
             // initial the state
             n_past             = 0;
             n_remain           = params.n_predict;
@@ -576,7 +577,7 @@ int main(int argc, char ** argv) {
             // consider the new message
             common_chat_msg new_msg;
             new_msg.role = "user";
-            new_msg.content = bench_questions[kk];
+            new_msg.content = bench_questions[kk] + params.no_think;
             chat_msgs.back() = new_msg;
             // construct the new inputs
             common_chat_templates_inputs inputs;
@@ -788,6 +789,9 @@ int main(int argc, char ** argv) {
                 if ((int) embd.size() >= params.n_batch) {
                     break;
                 }
+            }
+            if (!params.benchmark.empty() && !params.verbose_prompt) {
+                input_echo = false;
             }
         }
 

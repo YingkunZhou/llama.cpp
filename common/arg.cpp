@@ -1647,6 +1647,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_MAIN}));
     add_opt(common_arg(
+        {"-ntk", "--no-think"}, "PROMPT",
+        "no-thinking mode prompt (default: none)",
+        [](common_params & params, const std::string & value) {
+            params.no_think = value;
+        }
+    ).set_excludes({LLAMA_EXAMPLE_COMMON}));
+    add_opt(common_arg(
         {"-bm", "--benchmark"}, "FNAME",
         "a file containing the benchmark prompts (default: none)",
         [](common_params & params, const std::string & value) {
