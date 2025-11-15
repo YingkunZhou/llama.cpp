@@ -482,6 +482,7 @@ namespace GGUFMeta {
 
 llama_model_loader::llama_model_loader(
         const std::string & fname,
+        const std::string & threshold_path,
         std::vector<std::string> & splits,
         bool use_mmap,
         bool check_tensors,
@@ -505,6 +506,7 @@ llama_model_loader::llama_model_loader(
     struct gguf_init_params params = {
         /*.no_alloc = */ true,
         /*.ctx      = */ &ctx,
+        /*.threshold= */ threshold_path.empty()? nullptr: threshold_path.c_str(),
     };
 
     meta.reset(gguf_init_from_file(fname.c_str(), params));
@@ -565,6 +567,7 @@ llama_model_loader::llama_model_loader(
             struct gguf_init_params split_params = {
                 /*.no_alloc = */ true,
                 /*.ctx      = */ &ctx,
+                /*.threshold= */ threshold_path.empty()? nullptr: threshold_path.c_str(),
             };
             gguf_context_ptr ctx_gguf { gguf_init_from_file(fname_split, split_params) };
             if (!ctx_gguf) {
@@ -826,6 +829,8 @@ struct ggml_tensor * llama_model_loader::create_tensor(struct ggml_context * ctx
 
     struct ggml_tensor * tensor = ggml_dup_tensor(ctx, cur);
     ggml_set_name(tensor, ggml_get_name(cur));
+    GGML_ASSERT(tensor->op_params[0] == 0 && tensor->op_params[1] == 0);
+    memcpy(tensor->op_params, cur->op_params, 2*sizeof(float));
 
     if (duplicated) {
         size_data += ggml_nbytes(cur);

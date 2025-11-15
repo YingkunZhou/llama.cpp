@@ -50,6 +50,7 @@ static struct gguf_context * load_gguf(std::string & fname, struct ggml_context 
     struct gguf_init_params params = {
         /*.no_alloc = */ true,
         /*.ctx      = */ ctx_ggml,
+        nullptr,
     };
     struct gguf_context * ctx_gguf = gguf_init_from_file(fname.c_str(), params);
     if (!ctx_gguf) {

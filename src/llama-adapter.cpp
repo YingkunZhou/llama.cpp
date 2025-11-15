@@ -152,6 +152,7 @@ static void llama_adapter_lora_init_impl(llama_model & model, const char * path_
     gguf_init_params meta_gguf_params = {
         /* .no_alloc = */ true,
         /* .ctx      = */ &ctx_init,
+        nullptr,
     };
 
     gguf_context_ptr ctx_gguf { gguf_init_from_file(path_lora, meta_gguf_params) };

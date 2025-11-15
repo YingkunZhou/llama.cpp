@@ -1125,6 +1125,7 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.use_mmap        = params.use_mmap;
     mparams.use_mlock       = params.use_mlock;
     mparams.check_tensors   = params.check_tensors;
+    mparams.threshold_path  = params.threshold.c_str();
 
     if (params.kv_overrides.empty()) {
         mparams.kv_overrides = NULL;
@@ -1440,6 +1441,7 @@ static common_control_vector_data common_control_vector_load_one(const common_co
     struct gguf_init_params meta_gguf_params = {
         /* .no_alloc = */ false,
         /* .ctx      = */ &ctx,
+        nullptr,
     };
     struct gguf_context * ctx_gguf = gguf_init_from_file(load_info.fname.c_str(), meta_gguf_params);
     if (!ctx_gguf) {

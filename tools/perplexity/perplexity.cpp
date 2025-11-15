@@ -2017,6 +2017,13 @@ int main(int argc, char ** argv) {
     llama_backend_init();
     llama_numa_init(params.numa);
 
+    // load the residual model
+    if (!params.speculative.model.path.empty()) {
+        llama_model_params residual_model_params = common_model_params_to_llama(params);
+        residual_model_params.use_as_residual = true;
+        params.model_res = llama_model_load_from_file(params.speculative.model.path.c_str(), residual_model_params);
+        GGML_ASSERT(params.model_res);
+    }
     // load the model and apply lora adapter, if any
     common_init_result llama_init = common_init_from_params(params);
 

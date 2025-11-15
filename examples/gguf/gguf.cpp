@@ -87,6 +87,7 @@ static bool gguf_ex_read_0(const std::string & fname) {
     struct gguf_init_params params = {
         /*.no_alloc = */ false,
         /*.ctx      = */ NULL,
+        nullptr,
     };
 
     struct gguf_context * ctx = gguf_init_from_file(fname.c_str(), params);
@@ -153,6 +154,7 @@ static bool gguf_ex_read_1(const std::string & fname, bool check_data) {
     struct gguf_init_params params = {
         /*.no_alloc = */ false,
         /*.ctx      = */ &ctx_data,
+        nullptr,
     };
 
     struct gguf_context * ctx = gguf_init_from_file(fname.c_str(), params);

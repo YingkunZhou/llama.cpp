@@ -2015,6 +2015,7 @@ struct clip_model_loader {
         struct gguf_init_params params = {
             /*.no_alloc = */ true,
             /*.ctx      = */ &meta,
+            nullptr,
         };
 
         ctx_gguf = gguf_context_ptr(gguf_init_from_file(fname, params));

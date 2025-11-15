@@ -559,8 +559,12 @@ ggml_tensor * llm_graph_context::build_lora_mm(
           ggml_tensor * cur) const {
     ggml_tensor * res = ggml_mul_mat(ctx0, w, cur);
     // here we use ik_llama.cpp kernel to process weight-activation mat mul
-    assert(ggml_backend_buffer_get_usage(w->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
+    GGML_ASSERT(ggml_backend_buffer_get_usage(w->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS);
     ggml_set_ikquant(res);
+    GGML_ASSERT((cur->op_params[14] == 0 && cur->op_params[15] == 0) ||
+        (cur->op_params[14] == w->op_params[0] && cur->op_params[15] == w->op_params[1]));
+    cur->op_params[14] = w->op_params[0];
+    cur->op_params[15] = w->op_params[1];
     if (cparams.use_res && w->residual) {
         res->residual = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, w->ne[1], cur->ne[1]);
         // TODO: the two tensors' data must be adjacent

@@ -354,6 +354,7 @@ struct common_params {
     bool no_op_offload     = false; // globally disable offload host tensor operations to device
 
     bool single_turn       = false; // single turn chat conversation
+    std::string threshold  = "";    // path of offline calibration threshold
     std::string benchmark  = "";    // path of benchmark prompts file
     std::string no_think   = "";    // no_think string
 

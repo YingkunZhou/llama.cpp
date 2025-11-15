@@ -14,6 +14,9 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <unordered_map>
+#include <sstream>
+#include <fstream>
 
 template <typename T>
 struct type_to_gguf_type;
@@ -316,9 +319,47 @@ bool gguf_read_emplace_helper(const struct gguf_reader & gr, std::vector<struct 
     return true;
 }
 
+static std::unordered_map<std::string, std::vector<float>> read_threshold_from_text(const std::string& filename) {
+    std::ifstream file(filename);
+    if (!file) {
+        throw std::runtime_error("cannot open file: " + filename);
+    }
+
+    std::unordered_map<std::string, std::vector<float>> result;
+    std::string line;
+
+    while (std::getline(file, line)) {
+        if (line.empty()) continue;
+
+        // find the first whitespace to split key and value
+        size_t space_pos = line.find(' ');
+        if (space_pos == std::string::npos) continue;
+
+        std::string key = line.substr(0, space_pos);
+        std::string values_str = line.substr(space_pos + 1);
+
+        // parse float array
+        std::vector<float> values;
+        std::stringstream ss(values_str);
+        std::string token;
+
+        while (std::getline(ss, token, ',')) {
+            values.push_back(std::stof(token));
+        }
+
+        result[key] = values;
+    }
+
+    return result;
+}
+
 struct gguf_context * gguf_init_from_file_impl(FILE * file, struct gguf_init_params params) {
     const struct gguf_reader gr(file);
     struct gguf_context * ctx = new gguf_context;
+    std::unordered_map<std::string, std::vector<float>> threshold_map;
+    if (params.threshold_file != nullptr) {
+        threshold_map = read_threshold_from_text(params.threshold_file);
+    }
 
     bool ok = true;
 
@@ -717,6 +758,13 @@ struct gguf_context * gguf_init_from_file_impl(FILE * file, struct gguf_init_par
             }
 
             ggml_set_name(cur, info.t.name);
+            if (params.threshold_file != nullptr) {
+                auto it = threshold_map.find(info.t.name);
+                if (it != threshold_map.end()) {
+                    ggml_set_op_params_f32(cur, 0, it->second[0]);
+                    ggml_set_op_params_f32(cur, 1, it->second[1]);
+                }
+            }
 
             // point the data member to the appropriate location in the binary blob using the tensor info
             if (!params.no_alloc) {

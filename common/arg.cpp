@@ -1654,6 +1654,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_excludes({LLAMA_EXAMPLE_COMMON}));
     add_opt(common_arg(
+        {"-thsd", "--threshold"}, "FNAME",
+        "a file containing the benchmark prompts (default: none)",
+        [](common_params & params, const std::string & value) {
+            params.threshold = value;
+        }
+    ).set_excludes({LLAMA_EXAMPLE_COMMON}));
+    add_opt(common_arg(
         {"-bm", "--benchmark"}, "FNAME",
         "a file containing the benchmark prompts (default: none)",
         [](common_params & params, const std::string & value) {
@@ -3262,7 +3269,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         [](common_params & params, const std::string & value) {
             params.speculative.model.path = value;
         }
-    ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_MODEL_DRAFT"));
+    ).set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_PERPLEXITY}).set_env("LLAMA_ARG_MODEL_DRAFT"));
     add_opt(common_arg(
         {"-ctkd", "--cache-type-k-draft"}, "TYPE",
         string_format(

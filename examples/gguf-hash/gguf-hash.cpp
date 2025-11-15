@@ -290,6 +290,7 @@ static hash_exit_code_t gguf_hash(const hash_params & hash_params) {
     struct gguf_init_params params = {
         /*.no_alloc = */ false,
         /*.ctx      = */ &ctx_data,
+        nullptr,
     };
 
     // xxh64 init

@@ -219,6 +219,7 @@ static int load_imatrix(const std::string & imatrix_file, std::vector<std::strin
     struct gguf_init_params meta_gguf_params = {
         /* .no_alloc = */ false, // the data is needed
         /* .ctx      = */ &ctx,
+        nullptr,
     };
     struct gguf_context * ctx_gguf = gguf_init_from_file(imatrix_file.c_str(), meta_gguf_params);
     if (!ctx_gguf) {
