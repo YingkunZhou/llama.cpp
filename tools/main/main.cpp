@@ -83,24 +83,6 @@ static void sigint_handler(int signo) {
 }
 #endif
 
-static std::vector<std::string> readBenchmarkQFromFile(const std::string& filename) {
-    std::vector<std::string> result;
-    std::ifstream file(filename);
-    std::string line;
-
-    while (std::getline(file, line)) {
-        // replace "\\n" with '\n'
-        size_t pos = 0;
-        while ((pos = line.find("\\n", pos)) != std::string::npos) {
-            line.replace(pos, 2, "\n");
-            pos += 1;
-        }
-        result.push_back(line);
-    }
-
-    return result;
-}
-
 int main(int argc, char ** argv) {
     common_params params;
     g_params = &params;
@@ -553,6 +535,7 @@ int main(int argc, char ** argv) {
     std::vector<std::string> bench_questions;
     size_t loop_size = 1;
     if (!params.benchmark.empty()) {
+        GGML_ASSERT(params.prompt.empty());
         params.single_turn = true;
         params.interactive = false;
         params.interactive_first = false;

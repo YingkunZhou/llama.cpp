@@ -373,12 +373,13 @@ void llama_context::synchronize() {
     // this should only happen when using batch size 1 to evaluate a batch
 
     // add the evaluation to the stats
-    if (n_queued_tokens == 1) {
+    if (n_queued_tokens >= 1 && n_queued_tokens <= 8) {
         if (!cparams.no_perf) {
             t_eval_us += ggml_time_us() - t_compute_start_us;
         }
         n_eval++;
-    } else if (n_queued_tokens > 1) {
+    } else if (n_queued_tokens > 8) {
+        // FIXME: ASSUME prompt length must larger than 8
         if (!cparams.no_perf) {
             t_p_eval_us += ggml_time_us() - t_compute_start_us;
         }

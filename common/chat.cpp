@@ -16,8 +16,27 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <fstream>
 
 using json = nlohmann::ordered_json;
+
+std::vector<std::string> readBenchmarkQFromFile(const std::string& filename) {
+    std::vector<std::string> result;
+    std::ifstream file(filename);
+    std::string line;
+
+    while (std::getline(file, line)) {
+        // replace "\\n" with '\n'
+        size_t pos = 0;
+        while ((pos = line.find("\\n", pos)) != std::string::npos) {
+            line.replace(pos, 2, "\n");
+            pos += 1;
+        }
+        result.push_back(line);
+    }
+
+    return result;
+}
 
 static std::string format_time(const std::chrono::system_clock::time_point & now, const std::string & format) {
     auto time = std::chrono::system_clock::to_time_t(now);

@@ -3,6 +3,7 @@
 #include "sampling.h"
 #include "log.h"
 #include "llama.h"
+#include "chat.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -14,6 +15,8 @@
 
 #define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  128
 #define SPEC_VOCAB_CHECK_START_TOKEN_ID 5
+
+static common_params            * g_params;
 
 // #define ORIG
 #ifdef ORIG
@@ -651,6 +654,7 @@ int main(int argc, char ** argv) {
 #ifdef SELF
 int main(int argc, char ** argv) {
     common_params params;
+    g_params = &params;
     common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SPECULATIVE);
     // handle the printed log
     common_init();
@@ -674,12 +678,7 @@ int main(int argc, char ** argv) {
     const llama_vocab * vocab = llama_model_get_vocab(model_dft);
     auto * mem_dft = llama_get_memory(ctx_dft);
     // Tokenize the prompt
-    std::vector<llama_token> inp = common_tokenize(ctx_dft, params.prompt, true, true);
-    if (inp.size() > llama_n_ctx(ctx_dft) - 4) {
-        LOG_ERR("%s: prompt too long (%d tokens, max %d)\n", __func__, (int) inp.size(), llama_n_ctx(ctx_dft));
-        return 1;
-    }
-    LOG("\n\n");
+    const int n_ctx = llama_n_ctx(ctx_dft);
     // target model sampling context (reuse the llama_context's sampling instance)
     struct common_sampler * tgt_smpl = common_sampler_init(model_dft, params.sampling);
     // in draft model, due to speculative, penalty_present makes no sense
@@ -689,22 +688,66 @@ int main(int argc, char ** argv) {
         LOG_ERR("%s: failed to initialize sampling subsystem\n", __func__);
         return 1;
     }
-    for (auto id : inp) {
-        common_sampler_accept(tgt_smpl, id, /* accept_grammar= */ false);
-        LOG("%s", common_token_to_piece(ctx_dft, id).c_str());
+
+    std::vector<common_chat_msg> chat_msgs;
+    auto chat_templates = common_chat_templates_init(model_dft, params.chat_template);
+    auto chat_add_and_format = [&chat_msgs, &chat_templates](const std::string & role, const std::string & content) {
+        common_chat_msg new_msg;
+        new_msg.role = role;
+        new_msg.content = content;
+        auto formatted = common_chat_format_single(chat_templates.get(), chat_msgs, new_msg, role == "user", g_params->use_jinja);
+        chat_msgs.push_back(new_msg);
+        LOG_DBG("formatted: '%s'\n", formatted.c_str());
+        return formatted;
+    };
+
+    if (!params.system_prompt.empty()) {
+        // format the system prompt (will use template default if empty)
+        chat_add_and_format("system", params.system_prompt);
     }
-    const int n_input = inp.size();
-    /* ------------ prefill stage begin ------------ */
-    // although need, but still set use residual explicitly
-    llama_set_use_res(ctx_dft, true);
-    // eval the prompt with both models
-    const auto t_enc_start = ggml_time_us();
-    llama_decode(ctx_dft, llama_batch_get_one(inp.data(), n_input));
-    const auto t_enc_end = ggml_time_us();
-    llama_token token_id = common_sampler_sample(tgt_smpl, ctx_dft, -1);
-    common_sampler_accept(tgt_smpl, token_id, /* accept_grammar= */ true);
-    LOG("%s", common_token_to_piece(ctx_dft, token_id).c_str());
-    /* ------------ prefill stage end ------------ */
+
+    if (!params.prompt.empty()) {
+        // format and append the user prompt
+        chat_add_and_format("user", params.prompt);
+    }
+
+    size_t loop_size = 1;
+    std::vector<std::string> bench_questions;
+    std::vector<llama_token> inp;
+    if (!params.benchmark.empty()) {
+        GGML_ASSERT(params.prompt.empty());
+        params.single_turn = true;
+        params.interactive = false;
+        params.interactive_first = false;
+        params.conversation_mode = COMMON_CONVERSATION_MODE_DISABLED;
+        bench_questions = readBenchmarkQFromFile(params.benchmark);
+        loop_size = bench_questions.size();
+        common_chat_msg tmp_msg;
+        chat_msgs.push_back(tmp_msg);
+    } else {
+        GGML_ASSERT(!params.prompt.empty());
+        common_chat_templates_inputs inputs;
+        inputs.use_jinja = g_params->use_jinja;
+        inputs.messages = chat_msgs;
+        inputs.add_generation_prompt = true;
+        std::string single_prompt = common_chat_templates_apply(chat_templates.get(), inputs).prompt;
+        if (params.verbose_prompt) {
+            LOG_INF("format prompt question in text_data.txt: \"%s\"\n", single_prompt.c_str());
+        }
+        inp = common_tokenize(ctx_dft, single_prompt, true, true);
+    }
+
+    // several counters
+    int n_predict, n_drafted, n_accept;
+    // how many tokens to draft each time
+    int n_draft = params.speculative.n_max;
+    // prepare target model initial batch
+    llama_batch batch_tgt = llama_batch_init(llama_n_batch(ctx_dft), 0, 1);
+    batch_tgt.n_tokens = n_draft + 1;
+    // llama_token --> prob mapping
+    std::vector<std::unordered_map<int, float>> cur_maps(5);
+    std::default_random_engine rng(params.sampling.seed == LLAMA_DEFAULT_SEED ? std::random_device()() : params.sampling.seed);
+    std::uniform_real_distribution<> u_dist;
 
     auto simple_batch_add = [](auto &batch, int idx, int token_id, int pos) {
         batch.token[idx]    = token_id;
@@ -713,29 +756,76 @@ int main(int argc, char ** argv) {
         batch.seq_id[idx][0]= 0;
         batch.logits[idx]   = 1;
     };
-    // how many tokens to draft each time
-    int n_draft = params.speculative.n_max;
-    // prepare target model initial batch
-    llama_batch batch_tgt = llama_batch_init(llama_n_batch(ctx_dft), 0, 1);
-    batch_tgt.n_tokens = n_draft + 1;
-    // initial several counter
-    int n_predict = 0;
-    int n_drafted = 0;
-    int n_accept  = 0;
-    int n_token = n_input;
-    // llama_token --> prob mapping
-    std::vector<std::unordered_map<int, float>> cur_maps(5);
-    std::default_random_engine rng(params.sampling.seed == LLAMA_DEFAULT_SEED ? std::random_device()() : params.sampling.seed);
-    std::uniform_real_distribution<> u_dist;
-    /* ------------ decode stage begin ------------ */
+
+    for (size_t kk = 0; kk <= loop_size; ++kk) {
+        if (kk > 0) {
+            LOG("\nn_draft = %d\n", n_draft);
+            LOG("n_predict = %d\n", n_predict);
+            LOG("n_drafted = %d\n", n_drafted);
+            LOG("n_accept  = %d\n", n_accept);
+            LOG("accept    = %.3f%%\n\n", 100.0f * n_accept / n_drafted);
+
+            const auto data = llama_perf_context(ctx_dft);
+            LOG("prefill time  = %10.2f ms / %5d tokens (%8.2f ms per token, %8.2f tokens per second)\n",
+            data.t_p_eval_ms, data.n_p_eval, data.t_p_eval_ms / data.n_p_eval, 1e3 / data.t_p_eval_ms * data.n_p_eval);
+            LOG("decoding time = %10.2f ms / %5d tokens (%8.2f ms per token, %8.2f tokens per second)\n",
+            data.t_eval_ms, n_predict, data.t_eval_ms / n_predict, 1e3 / data.t_eval_ms * n_predict);
+        }
+        if (kk == loop_size) break;
+        llama_memory_clear(llama_get_memory(ctx_dft), true);
+        if (!params.benchmark.empty()) {
+            LOG("\n>>>>>>>>>>>>>>>>>>>> %ld <<<<<<<<<<<<<<<<<<<<\n", kk);
+            llama_perf_context_reset(ctx_dft);
+            // consider the new message
+            common_chat_msg new_msg;
+            new_msg.role = "user";
+            new_msg.content = bench_questions[kk] + params.think_flag;
+            chat_msgs.back() = new_msg;
+            // construct the new inputs
+            common_chat_templates_inputs inputs;
+            inputs.use_jinja = g_params->use_jinja;
+            inputs.messages = chat_msgs;
+            inputs.add_generation_prompt = true; // TODO: !params.prompt.empty();
+            std::string single_prompt = common_chat_templates_apply(chat_templates.get(), inputs).prompt;
+            if (params.verbose_prompt) {
+                LOG_INF("format prompt question in text_data.txt: \"%s\"\n", single_prompt.c_str());
+            }
+            // TODO: true, true?
+            inp = common_tokenize(ctx_dft, single_prompt, true, true);
+        }
+
+    // reset several counter
+    n_predict = 0;
+    n_drafted = 0;
+    n_accept  = 0;
+    int n_past = inp.size();
+    if (n_past > n_ctx - 6) {
+        LOG_ERR("%s: prompt too long (%d tokens, max %d)\n", __func__, (int) inp.size(), n_ctx);
+        return 1;
+    }
+    common_sampler_reset(tgt_smpl);
+    for (auto id : inp) {
+        common_sampler_accept(tgt_smpl, id, /* accept_grammar= */ false);
+        // LOG("%s", common_token_to_piece(ctx_dft, id).c_str());
+    }
+    /* ------------ prefill stage ------------ */
+    // although need, but still set use residual explicitly
+    llama_set_use_res(ctx_dft, true);
+    // eval the prompt with both models
+    llama_decode(ctx_dft, llama_batch_get_one(inp.data(), n_past));
+    llama_token token_id = common_sampler_sample(tgt_smpl, ctx_dft, -1);
+    common_sampler_accept(tgt_smpl, token_id, /* accept_grammar= */ true);
+    LOG("%s", common_token_to_piece(ctx_dft, token_id).c_str());
+
+    /* ------------ decode stage ------------ */
     const auto t_dec_start = ggml_time_us();
     while (true) {
         /* ============ draft stage begin ============ */
         n_drafted += n_draft;
-        llama_memory_seq_rm(mem_dft, 0, n_token, -1);
+        llama_memory_seq_rm(mem_dft, 0, n_past, -1);
         common_sampler_reset(dft_smpl);
         llama_set_use_res(ctx_dft, false);
-        simple_batch_add(batch_tgt, 0, token_id, n_token);
+        simple_batch_add(batch_tgt, 0, token_id, n_past);
         // optionally, generate draft tokens that can be appended to the target batch
         //
         // this is the most important part of the speculation. the more probable tokens that are provided here
@@ -756,16 +846,16 @@ int main(int argc, char ** argv) {
                 llama_token_data cp_data = cur_p->data[c];
                 cur_map[cp_data.id] = cp_data.p;
             }
-            simple_batch_add(batch_tgt, i+1, token_id, n_token + i+1);
+            simple_batch_add(batch_tgt, i+1, token_id, n_past + i+1);
         }
         // print current draft sequences
         LOG_DBG("\ndraft: %s\n", string_from(ctx_dft, batch_tgt).c_str());
 
         /* ============ verify stage begin ============ */
-        llama_memory_seq_rm(mem_dft, 0, n_token, -1);
+        llama_memory_seq_rm(mem_dft, 0, n_past, -1);
         llama_set_use_res(ctx_dft, true);
         llama_decode(ctx_dft, batch_tgt);
-        ++n_token;
+        ++n_past;
         // used to determine end of generation
         bool has_eos = false;
         // loop until we fail to accept a drafted token or we run out of drafted tokens
@@ -803,7 +893,7 @@ int main(int argc, char ** argv) {
                         else LOG("%s", token_str.c_str());
                     }
                     ++n_accept;
-                    ++n_token;
+                    ++n_past;
                     ++i_dft;
                     LOG_DBG("\nthe sampled target token matches the %dth drafted token (%d, '%s') - accepted\n", i_dft, token_id, token_str.c_str());
                 }
@@ -847,7 +937,7 @@ int main(int argc, char ** argv) {
                         else LOG("%s", token_str.c_str());
                     }
                     ++n_accept;
-                    ++n_token;
+                    ++n_past;
                     ++i_dft;
                     LOG_DBG("\nthe sampled target token matches the %dth drafted token (%d, '%s') - accepted\n", i_dft, draft_token_id, token_str.c_str());
                 }
@@ -867,19 +957,39 @@ int main(int argc, char ** argv) {
         }
         // check if at end of generation
         if (n_predict > params.n_predict || has_eos) break;
+        GGML_ASSERT(params.grp_attn_n == 1);
+        // infinite text generation via context shifting
+        // if we run out of context:
+        // - take the n_keep first tokens from the original prompt (via n_past)
+        // - take half of the last (n_ctx - n_keep) tokens and recompute the logits in batches
+        if (n_past >= n_ctx - 2) {
+            if (!params.ctx_shift){
+                LOG_DBG("\n\n%s: context full and context shift is disabled => stopping\n", __func__);
+                break;
+            }
+
+            if (params.n_predict == -2) {
+                LOG_DBG("\n\n%s: context full and n_predict == -%d => stopping\n", __func__, params.n_predict);
+                break;
+            }
+
+            const int n_left    = n_past - params.n_keep;
+            const int n_discard = n_left/2;
+
+            LOG_DBG("context full, swapping: n_past = %d, n_left = %d, n_ctx = %d, n_keep = %d, n_discard = %d\n",
+                    n_past, n_left, n_ctx, params.n_keep, n_discard);
+
+            llama_memory_seq_rm (mem_dft, 0, params.n_keep            , params.n_keep + n_discard);
+            llama_memory_seq_add(mem_dft, 0, params.n_keep + n_discard, n_past, -n_discard);
+
+            n_past -= n_discard;
+
+            LOG_DBG("after swap: n_past = %d\n", n_past);
+        }
     }
-    auto t_dec_end = ggml_time_us();
-    /* ------------ decode stage end ------------ */
-    LOG("\n\n");
-    LOG_INF("encoded %4d tokens in %8.3f seconds, speed: %8.3f t/s\n", n_input,   (t_enc_end - t_enc_start) / 1e6f, inp.size() / ((t_enc_end - t_enc_start) / 1e6f));
-    LOG_INF("decoded %4d tokens in %8.3f seconds, speed: %8.3f t/s\n", n_predict, (t_dec_end - t_dec_start) / 1e6f, n_predict  / ((t_dec_end - t_dec_start) / 1e6f));
-    LOG_INF("\n");
-    LOG_INF("n_draft   = %d\n", n_draft);
-    LOG_INF("n_predict = %d\n", n_predict);
-    LOG_INF("n_drafted = %d\n", n_drafted);
-    LOG_INF("n_accept  = %d\n", n_accept);
-    LOG_INF("accept    = %.3f%%\n", 100.0f * n_accept / n_drafted);
-    LOG_INF("\n");
+    const auto t_dec_end = ggml_time_us();
+    LOG_INF("\ndecoded in %8.3f seconds\n", (t_dec_end - t_dec_start) / 1e6f);
+    }
 
     common_sampler_free(tgt_smpl);
     common_sampler_free(dft_smpl);

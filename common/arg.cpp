@@ -1647,8 +1647,8 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_MAIN}));
     add_opt(common_arg(
-        {"-ntk", "--no-think"}, "PROMPT",
-        "no-thinking mode prompt (default: none)",
+        {"-tk", "--think"}, "PROMPT",
+        "thinking mode prompt (default: none)",
         [](common_params & params, const std::string & value) {
             params.think_flag = value;
         }

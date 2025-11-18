@@ -70,6 +70,8 @@ struct common_chat_msg {
     }
 };
 
+std::vector<std::string> readBenchmarkQFromFile(const std::string& filename);
+
 struct common_chat_msg_diff {
     std::string reasoning_content_delta;
     std::string content_delta;
