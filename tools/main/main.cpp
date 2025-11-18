@@ -586,7 +586,7 @@ int main(int argc, char ** argv) {
             // consider the new message
             common_chat_msg new_msg;
             new_msg.role = "user";
-            new_msg.content = bench_questions[kk] + params.no_think;
+            new_msg.content = bench_questions[kk] + params.think_flag;
             chat_msgs.back() = new_msg;
             // construct the new inputs
             common_chat_templates_inputs inputs;

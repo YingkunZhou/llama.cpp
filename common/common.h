@@ -356,7 +356,7 @@ struct common_params {
     bool single_turn       = false; // single turn chat conversation
     std::string threshold  = "";    // path of offline calibration threshold
     std::string benchmark  = "";    // path of benchmark prompts file
-    std::string no_think   = "";    // no_think string
+    std::string think_flag = "";    // no_think string
 
     ggml_type cache_type_k = GGML_TYPE_F16; // KV cache data type for the K
     ggml_type cache_type_v = GGML_TYPE_F16; // KV cache data type for the V

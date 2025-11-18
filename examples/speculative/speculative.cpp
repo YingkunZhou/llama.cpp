@@ -647,13 +647,10 @@ int main(int argc, char ** argv) {
     return 0;
 }
 #else
-#define USE_FASTER_DRAFT 1
 #define SELF
 #ifdef SELF
 int main(int argc, char ** argv) {
     common_params params;
-    // needed to get candidate probs even for temp <= 0.0
-    params.sampling.n_probs = 128;
     common_params_parse(argc, argv, params, LLAMA_EXAMPLE_SPECULATIVE);
     // handle the printed log
     common_init();
@@ -683,17 +680,32 @@ int main(int argc, char ** argv) {
         return 1;
     }
     LOG("\n\n");
+    // target model sampling context (reuse the llama_context's sampling instance)
+    struct common_sampler * tgt_smpl = common_sampler_init(model_dft, params.sampling);
+    // in draft model, due to speculative, penalty_present makes no sense
+    params.sampling.penalty_present = 0;
+    struct common_sampler * dft_smpl = common_sampler_init(model_dft, params.sampling);
+    if (!tgt_smpl || !dft_smpl) {
+        LOG_ERR("%s: failed to initialize sampling subsystem\n", __func__);
+        return 1;
+    }
     for (auto id : inp) {
+        common_sampler_accept(tgt_smpl, id, /* accept_grammar= */ false);
         LOG("%s", common_token_to_piece(ctx_dft, id).c_str());
     }
     const int n_input = inp.size();
-///////////////encoding///////////////////////
-    const auto t_enc_start = ggml_time_us();
-    // eval the prompt with both models
+    /* ------------ prefill stage begin ------------ */
+    // although need, but still set use residual explicitly
     llama_set_use_res(ctx_dft, true);
+    // eval the prompt with both models
+    const auto t_enc_start = ggml_time_us();
     llama_decode(ctx_dft, llama_batch_get_one(inp.data(), n_input));
     const auto t_enc_end = ggml_time_us();
-///////////////decoding///////////////////////
+    llama_token token_id = common_sampler_sample(tgt_smpl, ctx_dft, -1);
+    common_sampler_accept(tgt_smpl, token_id, /* accept_grammar= */ true);
+    LOG("%s", common_token_to_piece(ctx_dft, token_id).c_str());
+    /* ------------ prefill stage end ------------ */
+
     auto simple_batch_add = [](auto &batch, int idx, int token_id, int pos) {
         batch.token[idx]    = token_id;
         batch.pos[idx]      = pos;
@@ -701,14 +713,6 @@ int main(int argc, char ** argv) {
         batch.seq_id[idx][0]= 0;
         batch.logits[idx]   = 1;
     };
-    // target model sampling context (reuse the llama_context's sampling instance)
-    struct common_sampler * tgt_smpl = common_sampler_init(model_dft, params.sampling);
-    if (!tgt_smpl) {
-        LOG_ERR("%s: failed to initialize sampling subsystem\n", __func__);
-        return 1;
-    }
-    llama_token token_id = common_sampler_sample(tgt_smpl, ctx_dft, n_input - 1);
-    LOG("%s", common_token_to_piece(ctx_dft, token_id).c_str());
     // how many tokens to draft each time
     int n_draft = params.speculative.n_max;
     // prepare target model initial batch
@@ -719,21 +723,19 @@ int main(int argc, char ** argv) {
     int n_drafted = 0;
     int n_accept  = 0;
     int n_token = n_input;
-    //begin decoding
-    common_params_sampling sparams;
-    sparams.no_perf = false;
-    sparams.top_k = 10;
-    sparams.samplers = {
-        COMMON_SAMPLER_TYPE_TOP_K,
-    };
-    struct common_sampler * dft_smpl = common_sampler_init(model_dft, sparams);
+    // llama_token --> prob mapping
+    std::vector<std::unordered_map<int, float>> cur_maps(5);
+    std::default_random_engine rng(params.sampling.seed == LLAMA_DEFAULT_SEED ? std::random_device()() : params.sampling.seed);
+    std::uniform_real_distribution<> u_dist;
+    /* ------------ decode stage begin ------------ */
     const auto t_dec_start = ggml_time_us();
     while (true) {
-        common_sampler_reset(dft_smpl);
-        simple_batch_add(batch_tgt, 0, token_id, n_token);
+        /* ============ draft stage begin ============ */
         n_drafted += n_draft;
         llama_memory_seq_rm(mem_dft, 0, n_token, -1);
+        common_sampler_reset(dft_smpl);
         llama_set_use_res(ctx_dft, false);
+        simple_batch_add(batch_tgt, 0, token_id, n_token);
         // optionally, generate draft tokens that can be appended to the target batch
         //
         // this is the most important part of the speculation. the more probable tokens that are provided here
@@ -741,21 +743,25 @@ int main(int argc, char ** argv) {
         // offloaded to a remote device. it doesn't even have to be based on an LLM. instead, it can provide tokens
         // from a cache or lookup tables.
         //
-        for (int i = 1; i <= n_draft; ++i) {
+        for (int i = 0; i < n_draft; ++i) {
             // draft model always process one token once time
             llama_decode(ctx_dft, llama_batch_get_one(&token_id, 1));
-            // why grammar_first?
-            common_sampler_sample(dft_smpl, ctx_dft, 0, true);
+            token_id = common_sampler_sample(dft_smpl, ctx_dft, -1, true);
+            // common_sampler_accept(dft_smpl, token_id, true); // useless
             const llama_token_data_array * cur_p = common_sampler_get_candidates(dft_smpl);
-            // add drafted token for each sequence
-            token_id = cur_p->data[0].id;
-            // why grammar_first?
-            common_sampler_accept(dft_smpl, token_id, true);
-            simple_batch_add(batch_tgt, i, token_id, n_token + i);
+            GGML_ASSERT(cur_p->size == 1 || cur_p->sorted == true);
+            auto &cur_map = cur_maps[i];
+            cur_map.clear();
+            for (size_t c = 0; c < cur_p->size; ++c) {
+                llama_token_data cp_data = cur_p->data[c];
+                cur_map[cp_data.id] = cp_data.p;
+            }
+            simple_batch_add(batch_tgt, i+1, token_id, n_token + i+1);
         }
         // print current draft sequences
         LOG_DBG("\ndraft: %s\n", string_from(ctx_dft, batch_tgt).c_str());
 
+        /* ============ verify stage begin ============ */
         llama_memory_seq_rm(mem_dft, 0, n_token, -1);
         llama_set_use_res(ctx_dft, true);
         llama_decode(ctx_dft, batch_tgt);
@@ -772,47 +778,98 @@ int main(int argc, char ** argv) {
         // available logits from the batch and sample the next token until we run out of logits or the sampler
         // disagrees with the draft
         //
-        while (true) {
+        while (i_dft < n_draft) {
             // check if the target token matches any of the drafts
             // for stochastic sampling, attempt to match the token with the drafted tokens
-            // greedy verification
             // sample from the target model
-            token_id = common_sampler_sample(tgt_smpl, ctx_dft, i_dft, false);
-            common_sampler_accept(tgt_smpl, token_id, true);
-            std::string token_str = common_token_to_piece(ctx_dft, token_id);
-            if (llama_vocab_is_eog(vocab, token_id)) has_eos = true;
             ++n_predict;
-            // print out generated tokens
-            if (!has_eos) {
-                if (i_dft < n_draft && token_id == tokens[i_dft] && params.use_color) {
-                    LOG("\u001b[%dm%s\u001b[37m", 36, token_str.c_str());
-                } else {
-                    LOG("%s", token_str.c_str());
-                }
-            }
+            token_id = common_sampler_sample(tgt_smpl, ctx_dft, i_dft, false);
+            std::string token_str = common_token_to_piece(ctx_dft, token_id);
             // dump the debug info, update the counters and check if at end of drafting
-            if (i_dft < n_draft) {
-                if (token_id == tokens[i_dft]) {
-                    LOG_DBG("\nthe sampled target token matches the %dth drafted token (%d, '%s') - accepted\n", i_dft, token_id, token_str.c_str());
+            llama_token draft_token_id = tokens[i_dft];
+            const llama_token_data_array * cur_p = common_sampler_get_candidates(tgt_smpl);
+            if (cur_p->size == 1) {
+                common_sampler_accept(tgt_smpl, token_id, true);
+                if (llama_vocab_is_eog(vocab, token_id)) has_eos = true;
+                if (token_id != draft_token_id) {
+                    if (!has_eos) {
+                        LOG("%s", token_str.c_str());
+                    }
+                    LOG_DBG("\nthe sampled target token (%d, '%s') did not match %dth draft token %d", token_id, token_str.c_str(), i_dft, draft_token_id);
+                    break;
+                } else {
+                    if (!has_eos) {
+                        if (params.use_color) LOG("\u001b[%dm%s\u001b[37m", 36, token_str.c_str());
+                        else LOG("%s", token_str.c_str());
+                    }
                     ++n_accept;
                     ++n_token;
                     ++i_dft;
+                    LOG_DBG("\nthe sampled target token matches the %dth drafted token (%d, '%s') - accepted\n", i_dft, token_id, token_str.c_str());
                 }
-                else {
-                    LOG_DBG("\nthe sampled target token (%d, '%s') did not match %dth draft token %d", token_id, token_str.c_str(), i_dft, tokens[i_dft]);
+            } else {
+                float accept_p = 0.0;
+                auto &cur_map = cur_maps[i_dft];
+                for (size_t i = 0; i < cur_p->size; ++i) {
+                    token_id = cur_p->data[i].id;
+                    if (token_id == draft_token_id) {
+                        accept_p = cur_p->data[i].p / cur_map[token_id];
+                        if (cur_p->data[i].p >= cur_map[token_id]) {
+                            break;
+                        }
+                    }
+                    cur_p->data[i].p = std::max(0.0f, cur_p->data[i].p - cur_map[token_id]);
+                }
+                float r = u_dist(rng);
+                if (r > accept_p) {
+                    LOG_DBG("speculative sampling were rejected, sampling from residual distribution\n");
+                    std::vector<float> probs(cur_p->size);
+                    for (size_t i = 0; i < cur_p->size; ++i) {
+                        probs[i] = cur_p->data[i].p;
+                    }
+                    std::discrete_distribution<> dist(probs.begin(), probs.end());
+                    const int idx = dist(rng);
+                    token_id  = cur_p->data[idx].id;
+                    token_str = common_token_to_piece(ctx_dft, token_id);
+                    common_sampler_accept(tgt_smpl, token_id, true);
+                    if (llama_vocab_is_eog(vocab, token_id)) has_eos = true;
+                    if (!has_eos) {
+                        LOG("%s", token_str.c_str());
+                    }
+                    LOG_DBG("\nthe sampled target token (%d, '%s') did not match %dth draft token %d", token_id, token_str.c_str(), i_dft, draft_token_id);
                     break;
+                } else {
+                    token_str = common_token_to_piece(ctx_dft, draft_token_id);
+                    common_sampler_accept(tgt_smpl, draft_token_id, true);
+                    if (llama_vocab_is_eog(vocab, draft_token_id)) has_eos = true;
+                    if (!has_eos) {
+                        if (params.use_color) LOG("\u001b[%dm%s\u001b[37m", 36, token_str.c_str());
+                        else LOG("%s", token_str.c_str());
+                    }
+                    ++n_accept;
+                    ++n_token;
+                    ++i_dft;
+                    LOG_DBG("\nthe sampled target token matches the %dth drafted token (%d, '%s') - accepted\n", i_dft, draft_token_id, token_str.c_str());
                 }
             }
-            else {
-                LOG_DBG("\nthe sampled target token (%d, '%s') ran out of drafted tokens", token_id, token_str.c_str());
-                break;
+        }
+        // if ran out of drafted tokens, use target model self-generate token
+        if (i_dft == n_draft) {
+            ++n_predict;
+            token_id = common_sampler_sample(tgt_smpl, ctx_dft, i_dft);
+            std::string token_str = common_token_to_piece(ctx_dft, token_id);
+            common_sampler_accept(tgt_smpl, token_id, true);
+            if (llama_vocab_is_eog(vocab, token_id)) has_eos = true;
+            if (!has_eos) {
+                LOG("%s", token_str.c_str());
             }
+            LOG_DBG("\nthe sampled target token (%d, '%s') ran out of drafted tokens", token_id, token_str.c_str());
         }
         // check if at end of generation
         if (n_predict > params.n_predict || has_eos) break;
     }
     auto t_dec_end = ggml_time_us();
-////////////////////////////////////////////
+    /* ------------ decode stage end ------------ */
     LOG("\n\n");
     LOG_INF("encoded %4d tokens in %8.3f seconds, speed: %8.3f t/s\n", n_input,   (t_enc_end - t_enc_start) / 1e6f, inp.size() / ((t_enc_end - t_enc_start) / 1e6f));
     LOG_INF("decoded %4d tokens in %8.3f seconds, speed: %8.3f t/s\n", n_predict, (t_dec_end - t_dec_start) / 1e6f, n_predict  / ((t_dec_end - t_dec_start) / 1e6f));
@@ -831,6 +888,7 @@ int main(int argc, char ** argv) {
     return 0;
 }
 #else
+#define USE_FASTER_DRAFT 1
 int main(int argc, char ** argv) {
     common_params params;
     // needed to get candidate probs even for temp <= 0.0
