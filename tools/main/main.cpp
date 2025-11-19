@@ -553,7 +553,7 @@ int main(int argc, char ** argv) {
             const auto data = llama_perf_context(ctx);
             LOG("prefill time  = %10.2f ms / %5d tokens (%8.2f ms per token, %8.2f tokens per second)\n",
             data.t_p_eval_ms, data.n_p_eval, data.t_p_eval_ms / data.n_p_eval, 1e3 / data.t_p_eval_ms * data.n_p_eval);
-            LOG("decoding time = %10.2f ms / %5d runs   (%8.2f ms per token, %8.2f tokens per second)\n",
+            LOG("decoding time = %10.2f ms / %5d tokens (%8.2f ms per token, %8.2f tokens per second)\n",
             data.t_eval_ms, data.n_eval, data.t_eval_ms / data.n_eval, 1e3 / data.t_eval_ms * data.n_eval);
         }
         if (kk == loop_size) break;
