@@ -1536,7 +1536,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.system_prompt.pop_back();
             }
         }
-    ).set_examples({LLAMA_EXAMPLE_MAIN}));
+    ).set_examples({LLAMA_EXAMPLE_MAIN, LLAMA_EXAMPLE_SPECULATIVE}));
     add_opt(common_arg(
         {"--in-file"}, "FNAME",
         "an input file (repeat to specify multiple files)",
@@ -1654,7 +1654,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_excludes({LLAMA_EXAMPLE_COMMON}));
     add_opt(common_arg(
-        {"-thsd", "--threshold"}, "FNAME",
+        {"-tl", "--threshold"}, "FNAME",
         "a file containing the benchmark prompts (default: none)",
         [](common_params & params, const std::string & value) {
             params.threshold = value;

@@ -812,7 +812,16 @@ int main(int argc, char ** argv) {
     // although need, but still set use residual explicitly
     llama_set_use_res(ctx_dft, true);
     // eval the prompt with both models
-    llama_decode(ctx_dft, llama_batch_get_one(inp.data(), n_past));
+    for (int i = 0; i < n_past; i += params.n_batch) {
+        int n_eval = n_past - i;
+        if (n_eval > params.n_batch) {
+            n_eval = params.n_batch;
+        }
+        if (llama_decode(ctx_dft, llama_batch_get_one(&inp[i], n_eval))) {
+            LOG_ERR("failed to eval\n");
+            return 1;
+        }
+    }
     llama_token token_id = common_sampler_sample(tgt_smpl, ctx_dft, -1);
     common_sampler_accept(tgt_smpl, token_id, /* accept_grammar= */ true);
     LOG("%s", common_token_to_piece(ctx_dft, token_id).c_str());
