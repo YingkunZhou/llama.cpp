@@ -2605,7 +2605,8 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
                 const size_t ne = res_src1->ne[1] * res_src1->ne[0];
                 const float low_median_threshold  = ((const float *)(dst_res->src[1]->op_params))[14];
                 const float high_median_threshold = ((const float *)(dst_res->src[1]->op_params))[15];
-                if (low_median_threshold > 0 && high_median_threshold > 0 && res_src1->ne[1] >= 5) {
+                bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && res_src1->ne[1] == 5;
+                if (enable_sparsity) {
                     void * bitmask = dst_res->src[2]->data;
                     generate_mask(res_src1, (uint8_t *) bitmask, low_median_threshold, high_median_threshold, 5, ctx.stream());
                     masked.alloc(ne);
@@ -2629,7 +2630,7 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
 #if ENABLE_FAST_GPU_VERIFY
                 bool enable_sparsity = false;
 #else
-                bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && dst->ne[1] >= 5;
+                bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && dst->ne[1] == 5;
 #endif
                 if (enable_sparsity) {
                     void * bitmask = dst_res->src[2]->data;
@@ -2652,7 +2653,7 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
 
                 const float low_median_threshold  = ((const float *)(dst_res->op_params))[14];
                 const float high_median_threshold = ((const float *)(dst_res->op_params))[15];
-                bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && dst->ne[1] >= 5;
+                bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && dst->ne[1] == 5;
                 if(enable_sparsity) {
                     generate_mask(dst, (uint8_t *)dst_res_cuda->src[2]->data,
                     low_median_threshold, high_median_threshold, 5, ctx.stream());
@@ -3043,7 +3044,7 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
 #if ENABLE_FAST_GPU_VERIFY
                         bool enable_sparsity = false;
 #else
-                        bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && node->ne[1] >= 5;
+                        bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && node->ne[1] == 5;
 #endif
                         if (enable_sparsity) {
                             generate_mask(node, (uint8_t*) bitmask,
@@ -3085,7 +3086,7 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
 #if ENABLE_FAST_GPU_VERIFY
                         bool enable_sparsity = false;
 #else
-                        bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && mul_tensor->ne[1] >= 5;
+                        bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && mul_tensor->ne[1] == 5;
 #endif
                         if (enable_sparsity) {
                             generate_mask(mul_tensor, (uint8_t*) bitmask,
