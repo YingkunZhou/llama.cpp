@@ -3162,43 +3162,43 @@ struct ZykIQ2KS_T {
         }
 
         for (int sr = 0; sr < simd_regs; ++sr) {
-        // deal with 4 shift cases
-        for (int shift = 0; shift < 4; ++shift) {
-            MM_LENI values[4];
+            // deal with 4 shift cases
+            for (int shift = 0; shift < 4; ++shift) {
+                MM_LENI values[4];
 
-            // apply shift and mask to extract 2-bit
-            for (int k = 0; k < 4; ++k) {
-                values[k] = MM_AND(MM_SRLI(q2bits[k][sr], shift*2), m3);
-            }
+                // apply shift and mask to extract 2-bit
+                for (int k = 0; k < 4; ++k) {
+                    values[k] = MM_AND(MM_SRLI(q2bits[k][sr], shift*2), m3);
+                }
 
-            // unpack and transpose the values 4xN2B->N2Bx4
-            /* avx256:
-                b0b32b64b96 |b1b33b65b97 |b2b34b66b98 |b3b35b67b99 |<3*4B>|| //128bit
-                b4b36b68b100|b5b37b69b101|b6b38b70b102|b7b39b71b103|<3*4B>|| //128bit
-               avx512:
-                b0b64b128b192|b1...|b2...|b3...|<3*4B>|| //128bit
-                b4b68b132b196|b5...|b6...|b7...|<3*4B>|| //128bit
-                b8b72b136b200|b9...|b10..|b11..|<3*4B>|| //128bit
-                b12b76b140b204|b13.|b14..|b15..|<3*4B>|| //128bit
-            */
-            MM_LENI lo02 = MM_UNPACKLO(values[0], values[2]);
-            MM_LENI hi02 = MM_UNPACKHI(values[0], values[2]);
-            MM_LENI lo13 = MM_UNPACKLO(values[1], values[3]);
-            MM_LENI hi13 = MM_UNPACKHI(values[1], values[3]);
+                // unpack and transpose the values 4xN2B->N2Bx4
+                /* avx256:
+                    b0b32b64b96 |b1b33b65b97 |b2b34b66b98 |b3b35b67b99 |<3*4B>|| //128bit
+                    b4b36b68b100|b5b37b69b101|b6b38b70b102|b7b39b71b103|<3*4B>|| //128bit
+                avx512:
+                    b0b64b128b192|b1...|b2...|b3...|<3*4B>|| //128bit
+                    b4b68b132b196|b5...|b6...|b7...|<3*4B>|| //128bit
+                    b8b72b136b200|b9...|b10..|b11..|<3*4B>|| //128bit
+                    b12b76b140b204|b13.|b14..|b15..|<3*4B>|| //128bit
+                */
+                MM_LENI lo02 = MM_UNPACKLO(values[0], values[2]);
+                MM_LENI hi02 = MM_UNPACKHI(values[0], values[2]);
+                MM_LENI lo13 = MM_UNPACKLO(values[1], values[3]);
+                MM_LENI hi13 = MM_UNPACKHI(values[1], values[3]);
 
-            values[0] = MM_SHUFFLE(iqk_values, MM_UNPACKLO(lo02, lo13));
-            values[1] = MM_SHUFFLE(iqk_values, MM_UNPACKHI(lo02, lo13));
-            values[2] = MM_SHUFFLE(iqk_values, MM_UNPACKLO(hi02, hi13));
-            values[3] = MM_SHUFFLE(iqk_values, MM_UNPACKHI(hi02, hi13));
+                values[0] = MM_SHUFFLE(iqk_values, MM_UNPACKLO(lo02, lo13));
+                values[1] = MM_SHUFFLE(iqk_values, MM_UNPACKHI(lo02, lo13));
+                values[2] = MM_SHUFFLE(iqk_values, MM_UNPACKLO(hi02, hi13));
+                values[3] = MM_SHUFFLE(iqk_values, MM_UNPACKHI(hi02, hi13));
 
-            // apply mat_mul
-            for (int k = 0; k < 4; ++k) {
-                for (int iy = 0; iy < nrc_y; ++iy) {
-                    int idx = nrc_y * (16*sr + 4*shift + k) + iy;
-                    sumi[idx] = MM_DPBUSD(sumi[idx], values[k], sy[iy]);
+                // apply mat_mul
+                for (int k = 0; k < 4; ++k) {
+                    for (int iy = 0; iy < nrc_y; ++iy) {
+                        int idx = nrc_y * (16*sr + 4*shift + k) + iy;
+                        sumi[idx] = MM_DPBUSD(sumi[idx], values[k], sy[iy]);
+                    }
                 }
             }
-        }
         }
     }
     template <int nrc_y>
@@ -3293,57 +3293,57 @@ static void iq2ks_t_mul_mat(int Nx, const void * vx, size_t bx, struct DataInfo*
 
     ZykIQ2KS_T deq(Nx, ix);
 
-        // Initialize accumulation vector to zero
-        MM_LEN accd[nrc_y * QK_T / N32B] = {};
-        // Process the input
-        deq.new_row(vx, bx, info->act_mask, start * QK_K, end * QK_K);
-        // Loop over super blocks
-        for (int i = start; i < end; ++i) {
-            MM_LENI accm[nrc_y * QK_T / N32B] = {};
-            deq.compute_block<nrc_y>(i, q8, accm);
-            for (int k = 0; k < QK_T / N32B; ++k) {
-                for (int iy = 0; iy < nrc_y; ++iy) {
-                    int idx = nrc_y * k + iy;
-                    accd[idx] = MM_FMADD(MM_SET1F32(q8[iy][i].d), MM_CVTF32(accm[idx]), accd[idx]);
-                }
-            }
-        }
-
-        if (info->nsplit == 2) {
-            std::atomic<int>* flag = &DuoThreadReduce[info->ith/2].flag;
-            if (info->ith % 2) {
-                // the odd thread must wait for the even thread to finish
-                // the even thread will write flag with next ix
-                while (!flag->load(std::memory_order_acquire)) {}
-            }
-            else {
-                // the even thread must wait for the previous odd thread to finish
-                // the odd thread will clear the flag once obtain the ix
-                while (flag->load(std::memory_order_acquire)) {}
-            }
-        }
-
-        // Store the result
-        float d[QK_T];
-        for (int i = 0; i < QK_T; i++) d[i] = GGML_CPU_FP16_TO_FP32(deq.dptr[i]);
-
-        if (info->nsplit == 2 && info->ith % 2) {
+    // Initialize accumulation vector to zero
+    MM_LEN accd[nrc_y * QK_T / N32B] = {};
+    // Process the input
+    deq.new_row(vx, bx, info->act_mask, start * QK_K, end * QK_K);
+    // Loop over super blocks
+    for (int i = start; i < end; ++i) {
+        MM_LENI accm[nrc_y * QK_T / N32B] = {};
+        deq.compute_block<nrc_y>(i, q8, accm);
+        for (int k = 0; k < QK_T / N32B; ++k) {
             for (int iy = 0; iy < nrc_y; ++iy) {
-                for (int k = 0; k < QK_T; k += N32B) {
-                    float * addr = info->s + (info->cur_y + iy)*info->bs + k;
-                    // this order to faster write back
-                    MM_STORE(addr, MM_FMADD(accd[nrc_y * k/N32B + iy], *(const MM_LEN*)(d+k), MM_LOADF(addr)));
-                }
+                int idx = nrc_y * k + iy;
+                accd[idx] = MM_FMADD(MM_SET1F32(q8[iy][i].d), MM_CVTF32(accm[idx]), accd[idx]);
             }
-            return;
         }
+    }
 
+    if (info->nsplit == 2) {
+        std::atomic<int>* flag = &DuoThreadReduce[info->ith/2].flag;
+        if (info->ith % 2) {
+            // the odd thread must wait for the even thread to finish
+            // the even thread will write flag with next ix
+            while (!flag->load(std::memory_order_acquire)) {}
+        }
+        else {
+            // the even thread must wait for the previous odd thread to finish
+            // the odd thread will clear the flag once obtain the ix
+            while (flag->load(std::memory_order_acquire)) {}
+        }
+    }
+
+    // Store the result
+    float d[QK_T];
+    for (int i = 0; i < QK_T; i++) d[i] = GGML_CPU_FP16_TO_FP32(deq.dptr[i]);
+
+    if (info->nsplit == 2 && info->ith % 2) {
         for (int iy = 0; iy < nrc_y; ++iy) {
             for (int k = 0; k < QK_T; k += N32B) {
                 float * addr = info->s + (info->cur_y + iy)*info->bs + k;
-                MM_STORE(addr, MM_MULF32(accd[nrc_y * k/N32B + iy], *(const MM_LEN*)(d+k)));
+                // this order to faster write back
+                MM_STORE(addr, MM_FMADD(accd[nrc_y * k/N32B + iy], *(const MM_LEN*)(d+k), MM_LOADF(addr)));
             }
         }
+        return;
+    }
+
+    for (int iy = 0; iy < nrc_y; ++iy) {
+        for (int k = 0; k < QK_T; k += N32B) {
+            float * addr = info->s + (info->cur_y + iy)*info->bs + k;
+            MM_STORE(addr, MM_MULF32(accd[nrc_y * k/N32B + iy], *(const MM_LEN*)(d+k)));
+        }
+    }
 }
 
 struct ZykIQ2KS {

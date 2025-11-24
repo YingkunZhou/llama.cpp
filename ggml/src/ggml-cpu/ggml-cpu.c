@@ -1509,10 +1509,12 @@ void ggml_compute_forward_mul_mat(
             }
         } else
 #endif
-        for (int64_t i11 = ith; i11 < ne11; i11 += nth) {
-            from_float(
-                (float *)((char *) src1->data + i11*nb11),
-                (void *) ((char *)params->wdata + i11*nbw1), ne10);
+        {
+            for (int64_t i11 = ith; i11 < ne11; i11 += nth) {
+                from_float(
+                    (float *)((char *) src1->data + i11*nb11),
+                    (void *) ((char *)params->wdata + i11*nbw1), ne10);
+            }
         }
 
         ggml_barrier(params->threadpool);
