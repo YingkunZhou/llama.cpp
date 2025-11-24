@@ -1447,6 +1447,11 @@ static void quantize_row_q8_KS(const float * GGML_RESTRICT x, void * GGML_RESTRI
     }
 }
 #endif
+
+#define SIMULATE_PERFORMANCE 0
+#if SIMULATE_PERFORMANCE
+int8_t act_mask[14336];
+#endif
 void ggml_compute_forward_mul_mat(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
@@ -1492,7 +1497,11 @@ void ggml_compute_forward_mul_mat(
         GGML_ASSERT(src1->type == GGML_TYPE_F32);
 
 #if USE_ZYK
-        if (type == GGML_TYPE_IQ2_KS) {
+        if (type == GGML_TYPE_IQ2_KS
+#if SIMULATE_PERFORMANCE
+         || type == GGML_TYPE_IQ2_KS_T
+#endif
+        ) {
             for (int64_t i11 = ith; i11 < ne11; i11 += nth) {
                 quantize_row_q8_KS(
                     (float *)((char *) src1->data + i11*nb11),
@@ -1515,7 +1524,12 @@ void ggml_compute_forward_mul_mat(
             ne01, ne11, ne00,
             src0->type, (const char *)src0->data, /*strideA*/ nb01,
             vec_dot_type, (const char *)params->wdata, /*strideB*/ nbw1,
-            (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth, NULL))
+#if SIMULATE_PERFORMANCE
+            (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth, act_mask
+#else
+            (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth, NULL
+#endif
+            ))
             return;
     }
 #if GGML_USE_LLAMAFILE
@@ -1683,7 +1697,6 @@ static void ggml_compute_forward_residual(
 
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
-    const struct ggml_tensor * src2 = dst->src[2];
 
     GGML_TENSOR_BINARY_OP_LOCALS
 
@@ -1708,7 +1721,12 @@ static void ggml_compute_forward_residual(
         ne01, ne11, ne00,
         src0->type, (const char *)src0->data, /*strideA*/ nb01,
         src1->type, (const char *)src1->data, /*strideB*/ nb11,
-        (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth, (const uint8_t *)src2->data);
+#if SIMULATE_PERFORMANCE
+        (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth, act_mask
+#else
+        (float *)dst->data, /*stride_C*/ nb1/sizeof(float), ith, nth, (const int8_t *)dst->src[2]->data
+#endif
+    );
 }
 
 // ggml_compute_forward_mul_mat_id
@@ -3452,6 +3470,11 @@ struct ggml_threadpool * ggml_threadpool_new(struct ggml_threadpool_params * tpp
 
 enum ggml_status ggml_graph_compute(struct ggml_cgraph * cgraph, struct ggml_cplan * cplan) {
     ggml_cpu_init();
+#if SIMULATE_PERFORMANCE
+    for (int i = 0; i < 14336; i+=2) {
+        // act_mask[i+0] = 1;
+    }
+#endif
 
     GGML_ASSERT(cplan);
     GGML_ASSERT(cplan->n_threads > 0);

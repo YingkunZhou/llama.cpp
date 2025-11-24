@@ -11,8 +11,10 @@ extern "C" {
 __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, long Ny, long ne00,
         int typeA, const void * A, long strideA,
         int typeB, const void * B, long strideB,
-        float * C, long stride_C, int ith, int nth, const uint8_t * act_idx);
-    // act_idx = start_p(4B) | split_p(4B) | nums(/32) | idxs(0~256)
+        float * C, long stride_C, int ith, int nth, const int8_t * act_mask);
+    // act_mask: active mask format:
+    // for each channel, 0/other number used 1B to indicate whether active or not,
+    // the other number smaller, the more tend to be actived
 
     // the compute plan that needs to be prepared for ggml_graph_compute()
     // since https://github.com/ggml-org/ggml/issues/287

@@ -47,7 +47,7 @@ struct DataInfo {
     int           cur_y;
     int           nsplit;
     int           ith;
-    const uint8_t * act_idx;
+    const int8_t * act_mask;
 };
 
 static inline float iqk_hsum_float_4(__m128 x) {
@@ -3045,23 +3045,12 @@ typedef struct {
     uint8_t  extra[QK_T/8];
     uint8_t  scale_h[QK_T/8];
     uint32_t scale_l[QK_T/8];
-} subgroup_iq2_ks_Meta;
-static_assert(sizeof(subgroup_iq2_ks_Meta) == QK_T/8+QK_T/8+4*QK_T/8, "wrong iq2_ks_t block meta size/padding");
+} subblock_iq2_ks_meta;
+static_assert(sizeof(subblock_iq2_ks_meta) == QK_T/8+QK_T/8+4*QK_T/8, "wrong iq2_ks_t block meta size/padding");
 
 #define USE_FULL_TRANS 1
-#define USE_PREFETCH 1
-
-typedef struct {
-    subgroup_iq2_ks_Meta meta[8];
-#if !USE_FULL_TRANS
-    uint8_t  qs[256][QK_T/4];
-#endif
-} block_iq2_ks_T;
-#if USE_FULL_TRANS
-static_assert(sizeof(block_iq2_ks_T) == 8*(QK_T/8+QK_T/8+4*QK_T/8), "wrong iq2_ks_t block size/padding");
-#else
-static_assert(sizeof(block_iq2_ks_T) == 8*(QK_T/8+QK_T/8+4*QK_T/8)+256*QK_T/4, "wrong iq2_ks_t block size/padding");
-#endif
+#define ENABLE_HARDWARE_PREFETCH 1
+#define PREFETCH_WINDOW 16
 
 #ifdef HAVE_FANCY_SIMD
 
@@ -3118,41 +3107,58 @@ static_assert(sizeof(block_iq2_ks_T) == 8*(QK_T/8+QK_T/8+4*QK_T/8)+256*QK_T/4, "
 #define META_STYPE  uint32_t
 #define MM_SET1B1   _mm_set1_epi8
 #define MM_SET1B4   _mm_set1_epi32
+// the number of 32-bit value in the vector register
 #define N32B 8
+// the number of 2-bit value in the vector register
 #define N2B 128
 
 #endif // HAVE_FANCY_SIMD
 
 struct ZykIQ2KS_T {
+    // Nx: the total rows of weight matrix (aka, colunm size)
+    // ix: the start row of current process splited weight matrix
     ZykIQ2KS_T(int Nx, int ix): Nx(Nx), ix(ix)  {}
-    inline void new_row(const void * vx, size_t bx) {
+    inline void new_row(const void * vx, size_t bx, const int8_t * bitmask, int start, int end) {
+        // the memory layout is: all(QK_T*global_scale | QK_T*meta_data) | all qs
+        // all(QK_T*global_scale | QK_T*meta_data) size: bx*Nx bytes
+        qs = (const char *)vx + bx*Nx + ix/4; // every 8bit contains 4 2bit values
         dptr = (const ggml_half *)((const char *)vx + bx*ix);
-        x = (const block_iq2_ks_T *)(dptr+QK_T);
-#if USE_FULL_TRANS
-        qs = (const char *)vx + bx*Nx;
-        Nx /= N2B; ix /= N2B;
+        // size: QK_T * sizeof(ggml_half) bytes
+        metas = (const subblock_iq2_ks_meta *)(dptr + QK_T);
+
+        // TODO: add assert logic to ensure #activative channels >= 16
+        // in prepocess bitmask stage
+        act_mask = bitmask;
+        prefetch_p = start;
+        prefetch_end = end;
+        for (int i = 0; i < 16; prefetch_p++) {
+            if (act_mask[prefetch_p] == 0) {
+#if ENABLE_HARDWARE_PREFETCH
+                _mm_prefetch(qs + prefetch_p * Nx/4, _MM_HINT_T0);
 #endif
+                cur_p[i++] = prefetch_p;
+            }
+        }
     }
     template <int nrc_y>
-    inline void compute(int i, const block_q8_K ** q8, const MM_LENI * q2, MM_LENI * sumi, const uint8_t * act_idx) {
+    inline void compute(int block_id, const block_q8_K ** q8, MM_LENI * sumi) {
         constexpr int simd_regs = QK_T/N2B;
-#if USE_FULL_TRANS
-        int stride = Nx;
-#else
-        int stride = simd_regs;
-#endif
         MM_LENI q2bits[4][simd_regs];
         // load q2bits wight
-        for (int k = 0; k < 4; ++k)
-            for (int sr = 0; sr < simd_regs; ++sr)
-                q2bits[k][sr] = MM_LOADI(q2+stride*act_idx[k]+sr);
+        for (int k = 0; k < 4; ++k) {
+            for (int sr = 0; sr < simd_regs; ++sr) {
+                q2bits[k][sr] = MM_LOADI((const MM_LENI *)(qs + cur_p[k]*Nx/4) + sr);
+            }
+            cur_p[k] = cur_p[k] % QK_K;
+        }
 
         // prepare sy activation
         MM_LENI sy[nrc_y];
         for (int iy = 0; iy < nrc_y; ++iy) {
             // ATTENTION: there is a trap which should be careful!
-            const uint8_t * q8qs = (const uint8_t *)q8[iy][i].qs;
-            sy[iy] = MM_SET1I32(q8qs[act_idx[0]] | (q8qs[act_idx[1]] << 8) | (q8qs[act_idx[2]] << 16) | (q8qs[act_idx[3]] << 24));
+            const uint8_t * q8qs = (const uint8_t *)q8[iy][block_id].qs;
+            sy[iy] = MM_SET1I32(q8qs[cur_p[0]] | (q8qs[cur_p[1]] << 8) |
+                        (q8qs[cur_p[2]] << 16) | (q8qs[cur_p[3]] << 24));
         }
 
         for (int sr = 0; sr < simd_regs; ++sr) {
@@ -3196,41 +3202,42 @@ struct ZykIQ2KS_T {
         }
     }
     template <int nrc_y>
-    inline uint32_t compute_block(int i, const block_q8_K ** q8, MM_LENI * accm, const uint8_t * subcnt, const uint8_t * act_idx) {
-        const block_iq2_ks_T * block = x + i;
-        uint32_t offset = 0;
-#if USE_FULL_TRANS
-        const MM_LENI * sb_qs = (const MM_LENI *)qs + QK_K*Nx*i + ix;
-#if USE_PREFETCH
-        for (int pi = 0; pi < 8; ++pi) _mm_prefetch((const char *)(sb_qs + act_idx[pi] * Nx), _MM_HINT_T0);
-#endif // USE_PREFETCH
-#else
-        const MM_LENI * sb_qs = (const MM_LENI *)block->qs;
-#endif // USE_FULL_TRANS
-
+    inline void compute_block(int block_id, const block_q8_K ** q8, MM_LENI * accm) {
         MM_LENI sumi[nrc_y*QK_T/N32B];
         // Loop over sub blocks
+        int end_subblock = QK_K*block_id + QK_K/NSUBS;
+        const subblock_iq2_ks_meta * sub_metas = metas + NSUBS*block_id;
         for (int j = 0; j < NSUBS; ++j) {
-            const uint8_t * cur = act_idx + offset;
-            int cnt = subcnt[j];
-            if (cnt == 0) continue;
+            if (cur_p[0] >= end_subblock) continue;
 
-            const subgroup_iq2_ks_Meta sub_meta = block->meta[j];
+            const subblock_iq2_ks_meta sub_meta = sub_metas[j];
             for (int k = 0; k < QK_T/N32B; ++k) {
                 __m128i mins = _mm_and_si128(_mm_set1_epi8(5), _mm_cmpeq_epi8(hmask, _mm_and_si128(hmask, MM_SET1B1(((const META_ATYPE *)sub_meta.extra)[k]))));
                 mins = _mm_add_epi8(_mm_set1_epi8(-32), mins);
                 for (int iy = 0; iy < nrc_y; ++iy) {
                     int idx = nrc_y * k + iy;
-                    sumi[idx] = MM_MULI32(MM_CVTI32(mins), MM_SET1I32(((const int32_t*)q8[iy][i].bsums)[j]));
+                    sumi[idx] = MM_MULI32(MM_CVTI32(mins),
+                                MM_SET1I32(((const int32_t*)q8[iy][block_id].bsums)[j]));
                 }
             }
 
-            for (int k = 0; k < cnt; k += 4) {
-#if USE_FULL_TRANS && USE_PREFETCH
-                for (int pi = k + 8; pi < k + 16; ++pi) _mm_prefetch((const char *)(sb_qs + cur[pi] * Nx), _MM_HINT_T0);
+            while (cur_p[0] < end_subblock) {
+                compute<nrc_y>(block_id, q8, sumi);
+                if (prefetch_p < prefetch_end) {
+                    for (int i = 0; i < 4; prefetch_p++) {
+                        if (act_mask[prefetch_p] == 0) {
+#if ENABLE_HARDWARE_PREFETCH
+                            _mm_prefetch(qs + prefetch_p * Nx/4, _MM_HINT_T0);
 #endif
-                compute<nrc_y>(i, q8, sb_qs, sumi, cur + k);
+                            cur_p[i++] = prefetch_p;
+                        }
+                    }
+                } else {
+                    cur_p[0] = prefetch_end;
+                }
+                cur_p = prefetch_index + (cur_p - prefetch_index + 4) % PREFETCH_WINDOW;
             }
+            end_subblock += QK_K/NSUBS;
 
             for (int k = 0; k < QK_T/N32B; ++k) {
                 __m128i scales = _mm_and_si128(_mm_set1_epi8(-16), _mm_cmpeq_epi8(_mm_setzero_si128(), _mm_and_si128(hmask, MM_SET1B1(((const META_ATYPE *)sub_meta.scale_h)[k]))));
@@ -3240,17 +3247,18 @@ struct ZykIQ2KS_T {
                     accm[idx] = MM_ADD32(accm[idx], MM_MULI32(MM_CVTI32(scales), sumi[idx]));
                 }
             }
-            offset += cnt;
         }
-        return offset;
     }
 
     int Nx; int ix;
-#if USE_FULL_TRANS
     const char * qs;
-#endif
     const ggml_half * dptr;
-    const block_iq2_ks_T * x;
+    const int8_t * act_mask;
+    int prefetch_index[PREFETCH_WINDOW];
+    int * cur_p = prefetch_index;
+    int prefetch_p;
+    int prefetch_end;
+    const subblock_iq2_ks_meta * metas;
     //
 #ifdef HAVE_FANCY_SIMD
     // unpack 16*4bit B0B8|B1B9|B2B10|B3B11||B4B12|B5B13|B6B14|B7B15
@@ -3272,14 +3280,12 @@ struct ZykIQ2KS_T {
 template <int nrc_y>
 static void iq2ks_t_mul_mat(int Nx, const void * vx, size_t bx, struct DataInfo* info, int ix) {
     assert(bx % sizeof(block_iq2_ks) == 2);
-    const int nb = (bx - 2) / sizeof(block_iq2_ks) / info->nsplit;
-#if USE_FULL_TRANS
-    bx = (bx - 2) * sizeof(block_iq2_ks_T) / (QK_T * sizeof(block_iq2_ks)) + 2;
-#endif
+    const int nblocks = (bx - 2) / sizeof(block_iq2_ks);
+    const int nb = nblocks / info->nsplit;
+    // transfer row_size_qx
+    bx = nblocks * sizeof(subblock_iq2_ks_meta) * NSUBS / QK_T + 2;
     int start = (info->ith % info->nsplit) * nb;
     int end = start + nb;
-    uint32_t offset = ((const uint32_t *)info->act_idx)[info->ith % info->nsplit];
-    const uint8_t * subcnt = info->act_idx + 8;
 
     // Pre-fetching q8 pointers based on row indices
     const block_q8_K * q8[nrc_y];
@@ -3290,11 +3296,11 @@ static void iq2ks_t_mul_mat(int Nx, const void * vx, size_t bx, struct DataInfo*
         // Initialize accumulation vector to zero
         MM_LEN accd[nrc_y * QK_T / N32B] = {};
         // Process the input
-        deq.new_row(vx, bx);
+        deq.new_row(vx, bx, info->act_mask, start * QK_K, end * QK_K);
         // Loop over super blocks
         for (int i = start; i < end; ++i) {
             MM_LENI accm[nrc_y * QK_T / N32B] = {};
-            offset += deq.compute_block<nrc_y>(i, q8, accm, subcnt+NSUBS*i, info->act_idx+offset);
+            deq.compute_block<nrc_y>(i, q8, accm);
             for (int k = 0; k < QK_T / N32B; ++k) {
                 for (int iy = 0; iy < nrc_y; ++iy) {
                     int idx = nrc_y * k + iy;
@@ -5475,7 +5481,7 @@ static inline void stealing_barrier(int n_threads) {
 extern "C" __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, long Ny, long ne00,
         int typeA, const void * A, long strideA,
         int typeB, const void * B, long strideB,
-        float * C, long stride_C, int ith, int nth, const uint8_t * act_idx) {
+        float * C, long stride_C, int ith, int nth, const int8_t * act_mask) {
 
     auto etypeA = ggml_type(typeA);
     if (auto dequant_type = iqk_is_dequant_better(etypeA, Ny); dequant_type != etypeA) {
@@ -5542,7 +5548,7 @@ extern "C" __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, lo
         // The first chunk comes from our thread_id, the rest will get auto-assigned.
         int ix = ith/nsplit;
         while (ix < ngroups) {
-            struct DataInfo info = {C + QK_T*ix, (const char *)B, (size_t)stride_C, row_size_qy, 0, nsplit, ith, act_idx};
+            struct DataInfo info = {C + QK_T*ix, (const char *)B, (size_t)stride_C, row_size_qy, 0, nsplit, ith, act_mask};
             iq2ks_t_mul_mat_NxM(Nx, (const char *)A, row_size_qx, &info, QK_T*ix, Ny);
             if (ith % nsplit) {
                 ix = flag->exchange(0, std::memory_order_acq_rel);

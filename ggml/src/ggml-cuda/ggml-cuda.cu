@@ -2677,7 +2677,7 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
                 src0->type, (const char *)src0->data, /*strideA*/ src0->nb[1],
                 src1->type, (const char *)src1->data, /*strideB*/ src1->nb[1],
                 (float *)dst_res->data, /*stride_C*/ dst_res->nb[1]/sizeof(float),
-                omp_get_thread_num(), ctx.n_threads, (const uint8_t *)src2->data);
+                omp_get_thread_num(), ctx.n_threads, (const int8_t *) src2->data);
             #pragma omp barrier
         }
         #pragma omp master

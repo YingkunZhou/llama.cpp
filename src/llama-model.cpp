@@ -17481,7 +17481,7 @@ llama_model_params llama_model_default_params() {
         /*.use_mlock                   =*/ false,
         /*.check_tensors               =*/ false,
         /*.use_as_residual             =*/ false,
-        /*.threshold_path              =*/ nullptr,
+        /*.threshold_path              =*/ "",
     };
 
 #ifdef GGML_USE_METAL

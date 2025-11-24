@@ -573,11 +573,9 @@ ggml_tensor * llm_graph_context::build_lora_mm(
             cur_residual->op_params[14] = w->op_params[0];
             cur_residual->op_params[15] = w->op_params[1];
 
-            // CPU format: 1 cnt per 32 elements, with 2 start point at the beginning of the array
-            // GPU format: bitmask, but each 0/1 use 1B
+            // bitmask format: bitmask, for each channel, 0/other number used 1B to indicate whether active or not
+            // the other number smaller, the more tend to be actived
             // cur->residual->extra act as bitmask transfer from GPU to CPU;
-            // we have enough space to store 50% sparsity bitmask in CPU format
-            // and ->src[2] only allocated in CPU backend
             cur_residual->src[2] = ggml_new_tensor_2d(ctx0, GGML_TYPE_I8, cur->ne[0], cur->ne[1]/5);
         }
         res_residual->src[0] = w->residual;
