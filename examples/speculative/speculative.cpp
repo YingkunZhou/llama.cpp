@@ -681,6 +681,9 @@ int main(int argc, char ** argv) {
     const int n_ctx = llama_n_ctx(ctx_dft);
     // target model sampling context (reuse the llama_context's sampling instance)
     struct common_sampler * tgt_smpl = common_sampler_init(model_dft, params.sampling);
+    LOG_INF("sampler seed: %u\n",     common_sampler_get_seed(tgt_smpl));
+    LOG_INF("sampler params: \n%s\n", params.sampling.print().c_str());
+    LOG_INF("sampler chain: %s\n",    common_sampler_print(tgt_smpl).c_str());
     // in draft model, due to speculative, penalty_present makes no sense
     params.sampling.penalty_present = 0;
     struct common_sampler * dft_smpl = common_sampler_init(model_dft, params.sampling);
