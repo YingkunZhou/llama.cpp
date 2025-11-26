@@ -237,6 +237,7 @@ static std::vector<int> parse_int_range(const std::string & s) {
 
 struct cmd_params {
     std::vector<std::string>         model;
+    std::vector<std::string>         threshold;
     std::vector<std::string>         residual;
     std::vector<int>                 n_prompt;
     std::vector<int>                 n_gen;
@@ -275,6 +276,7 @@ struct cmd_params {
 
 static const cmd_params cmd_params_defaults = {
     /* model                */ { "models/7B/ggml-model-q4_0.gguf" },
+    /* threshold            */ { "" },
     /* residual             */ { "" },
     /* n_prompt             */ { 512 },
     /* n_gen                */ { 128 },
@@ -456,6 +458,13 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
                 }
                 auto p = string_split<std::string>(argv[i], split_delim);
                 params.residual.insert(params.residual.end(), p.begin(), p.end());
+            } else if (arg == "-thsd" || arg == "--threshold") {
+                if (++i >= argc) {
+                    invalid_param = true;
+                    break;
+                }
+                auto p = string_split<std::string>(argv[i], split_delim);
+                params.threshold.insert(params.threshold.end(), p.begin(), p.end());
             } else if (arg == "-p" || arg == "--n-prompt") {
                 if (++i >= argc) {
                     invalid_param = true;
@@ -912,6 +921,7 @@ static cmd_params parse_cmd_params(int argc, char ** argv) {
 
 struct cmd_params_instance {
     std::string        model;
+    std::string        threshold;
     std::string        residual;
     int                n_prompt;
     int                n_gen;
@@ -939,6 +949,7 @@ struct cmd_params_instance {
 
     llama_model_params to_llama_mparams() const {
         llama_model_params mparams = llama_model_default_params();
+        mparams.threshold_path = threshold.c_str();
 
         mparams.n_gpu_layers = n_gpu_layers;
         if (!rpc_servers_str.empty()) {
@@ -1043,12 +1054,14 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
     for (const auto & pl : params.poll) {
         // FIXME: very ugly
         std::string r = params.residual.size() != 0 ? params.residual[0] : "";
+        std::string thsd = params.threshold.size() != 0 ? params.threshold[0] : "";
         for (const auto & n_prompt : params.n_prompt) {
             if (n_prompt == 0) {
                 continue;
             }
             cmd_params_instance instance = {
                 /* .model        = */ m,
+                /* .threshold    = */ thsd,
                 /* .residual     = */ r,
                 /* .n_prompt     = */ n_prompt,
                 /* .n_gen        = */ 0,
@@ -1083,6 +1096,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
             }
             cmd_params_instance instance = {
                 /* .model        = */ m,
+                /* .threshold    = */ thsd,
                 /* .residual     = */ r,
                 /* .n_prompt     = */ 0,
                 /* .n_gen        = */ n_gen,
@@ -1117,6 +1131,7 @@ static std::vector<cmd_params_instance> get_cmd_params_instances(const cmd_param
             }
             cmd_params_instance instance = {
                 /* .model        = */ m,
+                /* .threshold    = */ thsd,
                 /* .residual     = */ r,
                 /* .n_prompt     = */ n_pg.first,
                 /* .n_gen        = */ n_pg.second,

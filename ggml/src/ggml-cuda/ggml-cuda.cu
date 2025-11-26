@@ -2309,7 +2309,8 @@ __global__ static void print_gpu_float_array(const float* array, int size) {
 
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
     ggml_tensor * dst_residual = dst->residual;
-    bool only_GPU = dst_residual == NULL || ggml_backend_buffer_is_cuda(dst_residual->buffer);
+    bool only_GPU = dst_residual == NULL || dst_residual->buffer == NULL ||
+                    ggml_backend_buffer_is_cuda(dst_residual->buffer);
 #pragma omp master
 {
     // why is this here instead of mul_mat?
@@ -2646,9 +2647,11 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
                 const float low_median_threshold  = ((const float *)(dst_residual->op_params))[14];
                 const float high_median_threshold = ((const float *)(dst_residual->op_params))[15];
                 bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && dst->ne[1] == 5;
+                quantize_fp32_to_q8_KS_cuda((const float *)dst->data, dst_residual->extra, ggml_nelements(dst), ctx.stream());
                 // in order to consist with ggml_alloc logic
                 size_t qinput_size = ggml_backend_buffer_get_alloc_size(dst->buffer, dst_residual);
-                quantize_fp32_to_q8_KS_cuda((const float *)dst->data, dst_residual->extra, ggml_nelements(dst), ctx.stream());
+                // to let bitmask start addr 64B (cacheline) aligned
+                qinput_size = (qinput_size + 63) & ~63;
                 // quanted_input & act_mask is adjcent
                 // TODO: add zero-copy logic
                 if(enable_sparsity) {
@@ -3041,20 +3044,21 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
     {
                     ggml_tensor * node_res = node->residual;
                     if (node_res) {
-                        bool only_GPU = ggml_backend_buffer_is_cuda(node_res->buffer);
                         const float low_median_threshold  = ((const float *)(node_res->op_params))[14];
                         const float high_median_threshold = ((const float *)(node_res->op_params))[15];
                         bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && node->ne[1] == 5;
 #if ENABLE_FAST_GPU_VERIFY
                         enable_sparsity = false;
-                        GGML_ASSERT(only_GPU == true);
+                        GGML_ASSERT(node_res->buffer == NULL);
 #endif
-                        if (!only_GPU) {
-                            // in order to consist with ggml_alloc memory layout
-                            size_t qinput_size = ggml_backend_buffer_get_alloc_size(node->buffer, node_res);
+                        if (node_res->buffer) {
                             quantize_fp32_to_q8_KS_cuda(
                                 (const float *)node->data, node_res->extra,
                                 ggml_nelements(node), cuda_ctx->stream());
+                            // in order to consist with ggml_alloc memory layout
+                            size_t qinput_size = ggml_backend_buffer_get_alloc_size(node->buffer, node_res);
+                            // to let bitmask start addr 64B (cacheline) aligned
+                            qinput_size = (qinput_size + 63) & ~63;
                             // TODO: add zero-copy logic
                             if (enable_sparsity) {
                                 generate_mask(node, (int8_t *) node_res->extra + qinput_size,
@@ -3086,20 +3090,21 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
                     ggml_cuda_op_rms_norm_fused(*cuda_ctx, node, mul_tensor);
                     ggml_tensor * mul_tensor_res = mul_tensor->residual;
                     if (mul_tensor_res) {
-                        bool only_GPU = ggml_backend_buffer_is_cuda(mul_tensor_res->buffer);
                         const float low_median_threshold  = ((const float *)(mul_tensor_res->op_params))[14];
                         const float high_median_threshold = ((const float *)(mul_tensor_res->op_params))[15];
                         bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && mul_tensor->ne[1] == 5;
 #if ENABLE_FAST_GPU_VERIFY
                         enable_sparsity = false;
-                        GGML_ASSERT(only_GPU == true);
+                        GGML_ASSERT(mul_tensor_res->buffer == NULL);
 #endif
-                        if (!only_GPU) {
-                            // in order to consist with ggml_alloc logic
-                            size_t qinput_size = ggml_backend_buffer_get_alloc_size(mul_tensor->buffer, mul_tensor_res);
+                        if (mul_tensor_res->buffer) {
                             quantize_fp32_to_q8_KS_cuda(
                                 (const float *)mul_tensor->data, mul_tensor_res->extra,
                                 ggml_nelements(mul_tensor), cuda_ctx->stream());
+                            // in order to consist with ggml_alloc logic
+                            size_t qinput_size = ggml_backend_buffer_get_alloc_size(mul_tensor->buffer, mul_tensor_res);
+                            // to let bitmask start addr 64B (cacheline) aligned
+                            qinput_size = (qinput_size + 63) & ~63;
                             // TODO: add zero-copy logic
                             if (enable_sparsity) {
                                 generate_mask(mul_tensor, (int8_t *) mul_tensor_res->extra + qinput_size,

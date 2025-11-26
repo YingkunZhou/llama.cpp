@@ -857,6 +857,8 @@ static void ggml_gallocr_init_tensor(ggml_gallocr_t galloc, struct ggml_tensor *
             }
             struct ggml_tensor * qinput = res_tensor->src[1];
             size_t qinput_size = ggml_backend_buft_get_alloc_size(galloc->bufts[0], qinput);
+            // to let bitmask start addr 64B (cacheline) aligned
+            qinput_size = (qinput_size + 63) & ~63;
             // on GPU backend
             if (galloc->n_buffers == 2) {
                 // quanted input | bitmask | residual output
