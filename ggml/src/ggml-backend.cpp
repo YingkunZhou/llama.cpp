@@ -1136,21 +1136,6 @@ static void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct gg
         int cur_backend_id = split->backend_id;
         for (; i < graph->n_nodes; i++) {
             struct ggml_tensor * node = graph->nodes[i];
-            struct ggml_tensor * res_node = node->residual;
-            if (res_node && sched->n_backends == 2 && res_node->src[0] &&
-                ggml_backend_buffer_is_host(res_node->src[0]->buffer)) {
-                // prepare the tensor for allocating GPU buffer later on
-                res_node->residual = ggml_dup_tensor_layout(zyk_ctx, res_node);
-                GGML_ASSERT(res_node->src[1] != NULL);
-                if (!res_node->src[1]->residual) {
-                    // used for DeviceToHost quanted_input
-                    res_node->src[1]->residual = ggml_dup_tensor_layout(zyk_ctx, res_node->src[1]);
-                }
-                // used for HostToDevice residual weights
-                res_node->residual->src[0] = ggml_dup_tensor_layout(zyk_ctx, res_node->src[0]);
-                res_node->residual->src[1] = res_node->src[1]->residual;
-                // ->src[2] GPU transfer bitmask through extra
-            }
 
             if (ggml_is_view_op(node->op)) {
                 continue;

@@ -67,10 +67,8 @@
 #include <stdlib.h>
 #include <string>
 #include <vector>
-#ifdef CUDA_USE_OPENMP
 #include <omp.h>
 #include "ggml-cpu.h"
-#endif
 
 static_assert(sizeof(half) == sizeof(ggml_fp16_t), "wrong fp16 size");
 
@@ -2307,15 +2305,13 @@ __global__ static void print_gpu_float_array(const float* array, int size) {
 }
 #endif
 
-#define ENABLE_FAST_GPU_VERIFY 1
+#define ENABLE_FAST_GPU_VERIFY 0
 
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
-    ggml_tensor * dst_res = dst->residual;
-    ggml_tensor * dst_res_cuda = dst_res ? dst_res->residual : NULL;
-#ifdef CUDA_USE_OPENMP
-    #pragma omp master
-    {
-#endif
+    ggml_tensor * dst_residual = dst->residual;
+    bool only_GPU = dst_residual == NULL || ggml_backend_buffer_is_cuda(dst_residual->buffer);
+#pragma omp master
+{
     // why is this here instead of mul_mat?
     if (dst->src[0] != nullptr && ggml_backend_buft_is_cuda_split(dst->src[0]->buffer->buft)) {
         ggml_cuda_set_peer_access(dst->src[1]->ne[1], ctx.device);
@@ -2592,25 +2588,26 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
         CUDA_CHECK(err);
     }
 
-    if (dst_res) {
-        if (dst_res_cuda == NULL) {
-            if (dst->op == GGML_OP_MUL_MAT) {
-                GGML_ASSERT(ggml_cuda_get_device() == 0);
-                const ggml_tensor * res_src0 = dst_res->src[0];
+    if (dst_residual) {
+        if (only_GPU) {
+            if (dst_residual->src[0]) {
+                GGML_ASSERT(dst->op == GGML_OP_MUL_MAT);
+                GGML_ASSERT(ggml_cuda_get_device() == 0); // TODO
+                const ggml_tensor * res_src0 = dst_residual->src[0];
 #if ENABLE_FAST_GPU_VERIFY
                 ggml_tensor res_src1_new;
                 ggml_tensor * res_src1 = &res_src1_new;
                 memcpy(res_src1, dst->src[1], sizeof(ggml_tensor));
                 ggml_cuda_pool_alloc<float> masked(ctx.pool(ggml_cuda_get_device()));
                 const size_t ne = res_src1->ne[1] * res_src1->ne[0];
-                const float low_median_threshold  = ((const float *)(dst_res->src[1]->op_params))[14];
-                const float high_median_threshold = ((const float *)(dst_res->src[1]->op_params))[15];
+                const float low_median_threshold  = ((const float *)(dst_residual->src[1]->op_params))[14];
+                const float high_median_threshold = ((const float *)(dst_residual->src[1]->op_params))[15];
                 bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && res_src1->ne[1] == 5;
                 if (enable_sparsity) {
-                    void * bitmask = dst_res->src[2]->data;
-                    generate_mask(res_src1, (uint8_t *) bitmask, low_median_threshold, high_median_threshold, 5, ctx.stream());
+                    void * bitmask = dst_residual->src[2]->data;
+                    generate_mask(res_src1, (int8_t *) bitmask, low_median_threshold, high_median_threshold, 5, ctx.stream());
                     masked.alloc(ne);
-                    maskColumnsGPUDevice(res_src1, masked.get(), (const uint8_t *) bitmask, 5, ctx.stream());
+                    maskColumnsGPUDevice(res_src1, masked.get(), (const int8_t *) bitmask, 5, ctx.stream());
                     res_src1->data = masked.get();
                 }
 
@@ -2620,83 +2617,94 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
 
                 //TODO: ASSERT
                 if (res_src1->ne[1] <= MMVQ_MAX_BATCH_SIZE) {
-                    ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, dst_res, ggml_cuda_op_mul_mat_vec_q, quantize_row_q8_1_cuda);
+                    ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, dst_residual, ggml_cuda_op_mul_mat_vec_q, quantize_row_q8_1_cuda);
                 } else { // if (use_mul_mat_q)
-                    ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, dst_res, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
+                    ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, dst_residual, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
                 }
             } else {
-                const float low_median_threshold  = ((const float *)(dst_res->op_params))[14];
-                const float high_median_threshold = ((const float *)(dst_res->op_params))[15];
-#if ENABLE_FAST_GPU_VERIFY
-                bool enable_sparsity = false;
-#else
+                GGML_ASSERT(dst->op != GGML_OP_MUL_MAT);
+                const float low_median_threshold  = ((const float *)(dst_residual->op_params))[14];
+                const float high_median_threshold = ((const float *)(dst_residual->op_params))[15];
                 bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && dst->ne[1] == 5;
+#if ENABLE_FAST_GPU_VERIFY
+                enable_sparsity = false;
 #endif
                 if (enable_sparsity) {
-                    void * bitmask = dst_res->src[2]->data;
-                    generate_mask(dst, (uint8_t *) bitmask,
+                    void * bitmask = dst_residual->src[2]->data;
+                    generate_mask(dst, (int8_t *) bitmask,
                     low_median_threshold, high_median_threshold, 5, ctx.stream());
-                    mask_activation(dst, (const uint8_t *) bitmask, 5, ctx.stream());
+                    mask_activation(dst, (const int8_t *) bitmask, 5, ctx.stream());
                 }
             }
         }
         else {
-            if (dst->op == GGML_OP_MUL_MAT) {
+            if (dst_residual->src[0]) {
                 // use CPU OPENMP kernel
+                GGML_ASSERT(dst->op == GGML_OP_MUL_MAT);
             } else {
-                quantize_fp32_to_q8_KS_cuda(
-                    (const float *)dst->data, dst_res_cuda->data,
-                    dst->ne[0] * dst->ne[1], ctx.stream());
-                // ggml_backend_cuda_buffer_get_tensor(dst_res_cuda->buffer, dst_res_cuda, dst_res->data, 0, ggml_nbytes(dst_res));
-                CUDA_CHECK(cudaMemcpyAsync(dst_res->data, (const char *)dst_res_cuda->data, ggml_nbytes(dst_res), cudaMemcpyDeviceToHost, ctx.stream()));
-                CUDA_CHECK(cudaStreamSynchronize(ctx.stream()));
-
-                const float low_median_threshold  = ((const float *)(dst_res->op_params))[14];
-                const float high_median_threshold = ((const float *)(dst_res->op_params))[15];
+                GGML_ASSERT(dst->op != GGML_OP_MUL_MAT);
+                const float low_median_threshold  = ((const float *)(dst_residual->op_params))[14];
+                const float high_median_threshold = ((const float *)(dst_residual->op_params))[15];
                 bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && dst->ne[1] == 5;
-                if(enable_sparsity) {
-                    generate_mask(dst, (uint8_t *)dst_res_cuda->src[2]->data,
-                    low_median_threshold, high_median_threshold, 5, ctx.stream());
-                }
+                // in order to consist with ggml_alloc logic
+                size_t qinput_size = ggml_backend_buffer_get_alloc_size(dst->buffer, dst_residual);
+                quantize_fp32_to_q8_KS_cuda((const float *)dst->data, dst_residual->extra, ggml_nelements(dst), ctx.stream());
+                // quanted_input & act_mask is adjcent
                 // TODO: add zero-copy logic
+                if(enable_sparsity) {
+                    generate_mask(dst, (int8_t *) dst_residual->extra + qinput_size,
+                    low_median_threshold, high_median_threshold, 5, ctx.stream());
+                    CUDA_CHECK(cudaMemcpyAsync(dst_residual->data, dst_residual->extra, qinput_size + dst->ne[0],
+                        cudaMemcpyDeviceToHost, ctx.stream()));
+                } else {
+                    CUDA_CHECK(cudaMemcpyAsync(dst_residual->data, dst_residual->extra, ggml_nbytes(dst_residual),
+                        cudaMemcpyDeviceToHost, ctx.stream()));
+                    memset((int8_t *) dst_residual->data + qinput_size, 0, dst->ne[0]);
+                    // tag for no need to adjust activation mask
+                    dst_residual->op_params[0] = 1;
+                }
+                CUDA_CHECK(cudaStreamSynchronize(ctx.stream()));
             }
         }
     }
-#ifdef CUDA_USE_OPENMP
-    } // end omp master
-    #pragma omp barrier
+} // end omp master
+#pragma omp barrier
 
-    if (dst->op == GGML_OP_MUL_MAT && dst_res) {
-        if (dst_res_cuda) {
-            const ggml_tensor * src0 = dst_res->src[0];
-            const ggml_tensor * src1 = dst_res->src[1];
-            const ggml_tensor * src2 = dst_res->src[2];
+    if (dst_residual && dst_residual->src[0]) {
+        if (!only_GPU) {
+            const ggml_tensor * src0 = dst_residual->src[0]; // weight
+            const ggml_tensor * src1 = dst_residual->src[1]; // quanted input
+            const ggml_tensor * src2 = dst_residual->src[2]; // sparse bitmask
             // TODO: add assert
             iqk_mul_mat(
                 src0->ne[1], src1->ne[1], src0->ne[0],
                 src0->type, (const char *)src0->data, /*strideA*/ src0->nb[1],
                 src1->type, (const char *)src1->data, /*strideB*/ src1->nb[1],
-                (float *)dst_res->data, /*stride_C*/ dst_res->nb[1]/sizeof(float),
-                omp_get_thread_num(), ctx.n_threads, (const int8_t *) src2->data);
-            #pragma omp barrier
+                (float *)dst_residual->data, /*stride_C*/ dst_residual->nb[1]/sizeof(float),
+                omp_get_thread_num(), ctx.n_threads,
+                (int8_t *) src2->data, src1->op_params[0] == 0);
+#pragma omp barrier
+#pragma omp master
+{
+                // TODO: zero-copy
+                cudaMemcpyAsync(dst_residual->extra, dst_residual->data, ggml_nbytes(dst_residual), cudaMemcpyHostToDevice, ctx.stream());
+                // to avoid adjust activation mask again if share the same input activation
+                dst_residual->src[1]->op_params[0] = 1;
+}
         }
-        #pragma omp master
-        {
-#endif
-        void * res_data = dst_res->data;
-        if (dst_res_cuda) {
-            cudaMemcpyAsync((char *)dst_res_cuda->data, dst_res->data, ggml_nbytes(dst_res), cudaMemcpyHostToDevice, ctx.stream());
-            res_data = dst_res_cuda->data;
-        }
+#pragma omp master
+{
         // print_tensor_kernel<<<dst->ne[0] * dst->ne[1] / 256, 256, 0, ctx.stream()>>>((float*)res_src1->data, res_src1->ne[0] * res_src1->ne[1]);
         int threadsPerBlock = 256;
-        int blocksPerGrid = (dst->ne[0] * dst->ne[1] + threadsPerBlock - 1) / threadsPerBlock;
-        vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, ctx.stream()>>>((float *)dst->data, (const float *)res_data, dst->ne[0] * dst->ne[1]);
-#ifdef CUDA_USE_OPENMP
-        }
-        #pragma omp barrier
+        const float * residual_output = only_GPU?
+                            (const float *)dst_residual->data:
+                            (const float *)dst_residual->extra;
+        int blocksPerGrid = (ggml_nelements(dst) + threadsPerBlock - 1) / threadsPerBlock;
+        vectorAdd<<<blocksPerGrid, threadsPerBlock, 0, ctx.stream()>>>((float *)dst->data,
+                    residual_output, ggml_nelements(dst));
+}
+#pragma omp barrier
     }
-#endif
     return true;
 }
 
@@ -3023,95 +3031,96 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
         // Only perform the graph execution if CUDA graphs are not enabled, or we are capturing the graph.
         // With the use of CUDA graphs, the execution will be performed by the graph launch.
         if (!use_cuda_graph || cuda_graph_update_required) {
-#ifdef CUDA_USE_OPENMP
-            #pragma omp parallel num_threads(cuda_ctx->n_threads)
-            {
-#endif
+#pragma omp parallel num_threads(cuda_ctx->n_threads)
+{
             for (int i = 0; i < cgraph->n_nodes; i++) {
                 ggml_tensor * node = cgraph->nodes[i];
 
                 if (ggml_is_empty(node) || node->op == GGML_OP_RESHAPE || node->op == GGML_OP_TRANSPOSE || node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_NONE) {
-#ifdef CUDA_USE_OPENMP
-                #pragma omp master
-                {
-#endif
+    #pragma omp master
+    {
                     ggml_tensor * node_res = node->residual;
                     if (node_res) {
+                        bool only_GPU = ggml_backend_buffer_is_cuda(node_res->buffer);
                         const float low_median_threshold  = ((const float *)(node_res->op_params))[14];
                         const float high_median_threshold = ((const float *)(node_res->op_params))[15];
-                        ggml_tensor * node_res_cuda = node_res->residual;
-                        void* bitmask = node_res_cuda? node_res_cuda->src[2]->data : node_res->src[2]->data;
-#if ENABLE_FAST_GPU_VERIFY
-                        bool enable_sparsity = false;
-#else
                         bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && node->ne[1] == 5;
+#if ENABLE_FAST_GPU_VERIFY
+                        enable_sparsity = false;
+                        GGML_ASSERT(only_GPU == true);
 #endif
-                        if (enable_sparsity) {
-                            generate_mask(node, (uint8_t*) bitmask,
-                            low_median_threshold, high_median_threshold, 5, cuda_ctx->stream());
-                        }
-                        if (node_res_cuda) {
+                        if (!only_GPU) {
+                            // in order to consist with ggml_alloc memory layout
+                            size_t qinput_size = ggml_backend_buffer_get_alloc_size(node->buffer, node_res);
                             quantize_fp32_to_q8_KS_cuda(
-                                (const float *)node->data, node_res_cuda->data,
-                                node->ne[0]*node->ne[1], cuda_ctx->stream());
-                            // ggml_backend_cuda_buffer_get_tensor(
-                            //     node_res_cuda->buffer, node_res_cuda,
-                            //     node_res->data, 0, ggml_nbytes(node_res));
-                            CUDA_CHECK(cudaMemcpyAsync(node_res->data, (const char *)node_res_cuda->data, ggml_nbytes(node_res), cudaMemcpyDeviceToHost, cuda_ctx->stream()));
-                            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
+                                (const float *)node->data, node_res->extra,
+                                ggml_nelements(node), cuda_ctx->stream());
                             // TODO: add zero-copy logic
+                            if (enable_sparsity) {
+                                generate_mask(node, (int8_t *) node_res->extra + qinput_size,
+                                low_median_threshold, high_median_threshold, 5, cuda_ctx->stream());
+                                CUDA_CHECK(cudaMemcpyAsync(node_res->data, node_res->extra, qinput_size + node->ne[0], cudaMemcpyDeviceToHost, cuda_ctx->stream()));
+                            } else {
+                                CUDA_CHECK(cudaMemcpyAsync(node_res->data, node_res->extra, ggml_nbytes(node_res),
+                                    cudaMemcpyDeviceToHost, cuda_ctx->stream()));
+                                memset((int8_t *) node_res->data + qinput_size, 0, node->ne[0]);
+                                // tag for no need to adjust activation mask
+                                node_res->op_params[0] = 1;
+                            }
+                            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
                         } else if (enable_sparsity) {
-                            mask_activation(node, (const uint8_t *) bitmask, 5, cuda_ctx->stream());
+                            void * act_mask = node_res->src[2]->data;
+                            generate_mask(node, (int8_t *) act_mask,
+                            low_median_threshold, high_median_threshold, 5, cuda_ctx->stream());
+                            mask_activation(node, (const int8_t *) act_mask, 5, cuda_ctx->stream());
                         }
                     }
-#ifdef CUDA_USE_OPENMP
-                }
-                #pragma omp barrier
-#endif
+    }
+    #pragma omp barrier
                     continue;
                 }
                 if (!disable_fusion && ggml_cuda_can_fuse(cgraph, i, { GGML_OP_RMS_NORM, GGML_OP_MUL })) {
-#ifdef CUDA_USE_OPENMP
-                #pragma omp master
-                {
-#endif
+    #pragma omp master
+    {
                     ggml_tensor * mul_tensor = cgraph->nodes[i+1];
                     ggml_cuda_op_rms_norm_fused(*cuda_ctx, node, mul_tensor);
                     ggml_tensor * mul_tensor_res = mul_tensor->residual;
                     if (mul_tensor_res) {
+                        bool only_GPU = ggml_backend_buffer_is_cuda(mul_tensor_res->buffer);
                         const float low_median_threshold  = ((const float *)(mul_tensor_res->op_params))[14];
                         const float high_median_threshold = ((const float *)(mul_tensor_res->op_params))[15];
-                        ggml_tensor * mul_tensor_res_cuda = mul_tensor_res->residual;
-                        void* bitmask = mul_tensor_res_cuda? mul_tensor_res_cuda->src[2]->data : mul_tensor_res->src[2]->data;
-#if ENABLE_FAST_GPU_VERIFY
-                        bool enable_sparsity = false;
-#else
                         bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && mul_tensor->ne[1] == 5;
+#if ENABLE_FAST_GPU_VERIFY
+                        enable_sparsity = false;
+                        GGML_ASSERT(only_GPU == true);
 #endif
-                        if (enable_sparsity) {
-                            generate_mask(mul_tensor, (uint8_t*) bitmask,
-                            low_median_threshold, high_median_threshold, 5, cuda_ctx->stream());
-                            // print_gpu_uint8_array<<<1,1,0,ctx.stream()>>>((const uint8_t *)dst_res->src[2]->data, 400);
-                        }
-                        if (mul_tensor_res_cuda) {
-                            // TODO: to use cudaStreamPerThread?
+                        if (!only_GPU) {
+                            // in order to consist with ggml_alloc logic
+                            size_t qinput_size = ggml_backend_buffer_get_alloc_size(mul_tensor->buffer, mul_tensor_res);
                             quantize_fp32_to_q8_KS_cuda(
-                                (const float *)mul_tensor->data, mul_tensor_res_cuda->data,
-                                mul_tensor->ne[0]*mul_tensor->ne[1], cuda_ctx->stream());
-                            CUDA_CHECK(cudaMemcpyAsync(mul_tensor_res->data, (const char *)mul_tensor_res_cuda->data, ggml_nbytes(mul_tensor_res), cudaMemcpyDeviceToHost, cuda_ctx->stream()));
-                            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
-                            // ggml_backend_cuda_buffer_get_tensor(
-                            //     mul_tensor_res_cuda->buffer, mul_tensor_res_cuda,
-                            //     mul_tensor_res->data, 0, ggml_nbytes(mul_tensor_res));
+                                (const float *)mul_tensor->data, mul_tensor_res->extra,
+                                ggml_nelements(mul_tensor), cuda_ctx->stream());
                             // TODO: add zero-copy logic
+                            if (enable_sparsity) {
+                                generate_mask(mul_tensor, (int8_t *) mul_tensor_res->extra + qinput_size,
+                                low_median_threshold, high_median_threshold, 5, cuda_ctx->stream());
+                                CUDA_CHECK(cudaMemcpyAsync(mul_tensor_res->data, mul_tensor_res->extra, qinput_size + mul_tensor->ne[0], cudaMemcpyDeviceToHost, cuda_ctx->stream()));
+                            } else {
+                                CUDA_CHECK(cudaMemcpyAsync(mul_tensor_res->data, mul_tensor_res->extra, ggml_nbytes(mul_tensor_res), cudaMemcpyDeviceToHost, cuda_ctx->stream()));
+                                memset((int8_t *) mul_tensor_res->data + qinput_size, 0, mul_tensor->ne[0]);
+                                // tag for no need to adjust activation mask
+                                mul_tensor_res->op_params[0] = 1;
+                            }
+                            CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
                         } else if (enable_sparsity) {
-                            mask_activation(mul_tensor, (const uint8_t *) bitmask, 5, cuda_ctx->stream());
+                            void * act_mask = mul_tensor_res->src[2]->data;
+                            generate_mask(node, (int8_t *) act_mask,
+                            low_median_threshold, high_median_threshold, 5, cuda_ctx->stream());
+                            mask_activation(mul_tensor, (const int8_t *) act_mask, 5, cuda_ctx->stream());
                         }
                     }
-#ifdef CUDA_USE_OPENMP
-                }
-                #pragma omp barrier
-#endif
+    }
+    #pragma omp barrier
                     i++;
                     continue;
                 }
@@ -3134,9 +3143,7 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
                 }
                 GGML_ASSERT(ok);
             }
-#ifdef CUDA_USE_OPENMP
-            }
-#endif
+}
         }
 
 #ifdef USE_CUDA_GRAPH

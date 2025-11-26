@@ -563,24 +563,28 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     ggml_set_ikquant(res);
     if (cparams.use_res && w->residual) {
         GGML_ASSERT(cur->ne[2] == 1 && cur->ne[3] == 1);
-        res->residual = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, w->ne[1], cur->ne[1]);
-        ggml_tensor * res_residual = res->residual;
+        ggml_tensor * cur_residual = cur->residual;
         // TODO: the two tensors' data must be adjacent
-        if (!cur->residual) {
+        if (cur_residual == NULL) {
             // act as quanted input
-            cur->residual = ggml_new_tensor(ctx0, GGML_TYPE_Q8_K, 4, cur->ne);
-            ggml_tensor * cur_residual = cur->residual;
+            cur_residual = ggml_new_tensor(ctx0, GGML_TYPE_Q8_K, 4, cur->ne);
+            // act as sparse bitmask
+            // format: for each channel, 0/other number used 1B to indicate whether active or not
+            // the other number smaller, the more tend to be actived
+#ifdef PERPLEXITY_DEBUG
+            cur_residual->src[2] = ggml_new_tensor_2d(ctx0, GGML_TYPE_I8, cur->ne[0], cur->ne[1]/5);
+#else
+            cur_residual->src[2] = ggml_new_tensor_1d(ctx0, GGML_TYPE_I8, cur->ne[0]);
+#endif
             cur_residual->op_params[14] = w->op_params[0];
             cur_residual->op_params[15] = w->op_params[1];
-
-            // bitmask format: bitmask, for each channel, 0/other number used 1B to indicate whether active or not
-            // the other number smaller, the more tend to be actived
-            // cur->residual->extra act as bitmask transfer from GPU to CPU;
-            cur_residual->src[2] = ggml_new_tensor_2d(ctx0, GGML_TYPE_I8, cur->ne[0], cur->ne[1]/5);
+            cur->residual = cur_residual;
         }
+        ggml_tensor * res_residual = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, w->ne[1], cur->ne[1]);
         res_residual->src[0] = w->residual;
-        res_residual->src[1] = cur->residual;
-        res_residual->src[2] = cur->residual->src[2];
+        res_residual->src[1] = cur_residual;
+        res_residual->src[2] = cur_residual->src[2];
+        res->residual = res_residual;
     }
 
     for (const auto & lora : *loras) {

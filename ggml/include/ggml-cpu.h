@@ -11,7 +11,7 @@ extern "C" {
 __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, long Ny, long ne00,
         int typeA, const void * A, long strideA,
         int typeB, const void * B, long strideB,
-        float * C, long stride_C, int ith, int nth, const int8_t * act_mask);
+        float * C, long stride_C, int ith, int nth, int8_t * act_mask, bool need_adjust_mask);
     // act_mask: active mask format:
     // for each channel, 0/other number used 1B to indicate whether active or not,
     // the other number smaller, the more tend to be actived

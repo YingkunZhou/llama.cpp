@@ -2,13 +2,14 @@
 
 const int NUM_BUCKETS = 32;
 
-__global__ static void generate_mask_by_rows(const float* activation, uint8_t* device_mask, unsigned int k, unsigned int rows, float b30, float b0) {
+__global__ static void generate_mask_by_rows(const float* activation, int8_t* device_mask, unsigned int k, unsigned int rows, float b30, float b0) {
     unsigned int group_start = blockIdx.x * 1024;
     unsigned int group_end = (group_start + 1024 < k) ? group_start + 1024 : k;
     unsigned int actual_group_size = group_end - group_start;
     unsigned int top_count = actual_group_size / 2;
 
     if (group_start >= k) return;
+    int8_t* device_mask_group = device_mask + group_start;
 
     // Calculate the sum of squares
     __shared__ float device_squared_values[1024];
@@ -58,7 +59,7 @@ __global__ static void generate_mask_by_rows(const float* activation, uint8_t* d
             for(int j = 0; j < 4; ++j) {
                 if (value[j] >= lower_bound && value[j] < upper_bound) {
                     bucket_count++;
-                    device_mask[group_start + i + j] = threadIdx.x;
+                    device_mask_group[i + j] = threadIdx.x;
                 }
             }
         }
@@ -79,16 +80,16 @@ __global__ static void generate_mask_by_rows(const float* activation, uint8_t* d
     }
     __syncthreads();
 
-    int edgebucket_in = edge_bucket[0];
+    int8_t threshold = edge_bucket[0];
     // Phase 3: Modify the masked
-    for (int i = threadIdx.x ; i < actual_group_size; i += blockDim.x ) {
-        if (device_mask[i + group_start] <=  edgebucket_in) {
-            device_mask[i + group_start] = 0;
+    if (threshold != 0) {
+        for (int i = threadIdx.x ; i < actual_group_size; i += blockDim.x) {
+            device_mask_group[i] = max(0, device_mask_group[i] + 1 - threshold);
         }
     }
 }
 
-void generate_mask(const ggml_tensor * node, uint8_t* bitmask, const float b30, const float b0, unsigned int rows, cudaStream_t stream) {
+void generate_mask(const ggml_tensor * node, int8_t* bitmask, const float b30, const float b0, unsigned int rows, cudaStream_t stream) {
     const float* activation = (const float*) node->data;
     unsigned int k = node->ne[0];
     unsigned int m = node->ne[1];
@@ -106,7 +107,7 @@ void generate_mask(const ggml_tensor * node, uint8_t* bitmask, const float b30, 
     }
 }
 
-__global__ static void mask_activation_by_rows(float * activation, const uint8_t * bitmask, unsigned int k, unsigned int m, unsigned int rows) {
+__global__ static void mask_activation_by_rows(float * activation, const int8_t * bitmask, unsigned int k, unsigned int m, unsigned int rows) {
     unsigned int channel_id = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int bias = (m / 512) * 12;
     for (int base = bias; base < m; base += rows){
@@ -121,7 +122,7 @@ __global__ static void mask_activation_by_rows(float * activation, const uint8_t
     }
 }
 
-void mask_activation(ggml_tensor * node, const uint8_t* bitmask, unsigned int rows, cudaStream_t stream) {
+void mask_activation(ggml_tensor * node, const int8_t* bitmask, unsigned int rows, cudaStream_t stream) {
     float * activation = (float *) node->data;
     unsigned int k = node->ne[0];
     unsigned int m = node->ne[1];
@@ -137,7 +138,7 @@ void mask_activation(ggml_tensor * node, const uint8_t* bitmask, unsigned int ro
     }
 }
 
-__global__ static void maskColumnsByColKernel(const float* src, float* dst, const uint8_t* bitmask, int k, int m, int rows) {
+__global__ static void maskColumnsByColKernel(const float* src, float* dst, const int8_t* bitmask, int k, int m, int rows) {
     int col = blockIdx.x * blockDim.x + threadIdx.x;
     unsigned int bias = (m / 512) * 12;
 
@@ -164,7 +165,7 @@ __global__ static void maskColumnsByColKernel(const float* src, float* dst, cons
     }
 }
 
-void maskColumnsGPUDevice(const ggml_tensor * node, float* masked_act, const uint8_t* bitmask, unsigned int rows, cudaStream_t stream) {
+void maskColumnsGPUDevice(const ggml_tensor * node, float* masked_act, const int8_t* bitmask, unsigned int rows, cudaStream_t stream) {
     const float * activation = (float *) node->data;
     unsigned int k = node->ne[0];
     unsigned int m = node->ne[1];

@@ -13,8 +13,8 @@
 #include <cstdlib>
 #include <algorithm>
 
-void generate_mask(const ggml_tensor * node, uint8_t* bitmask, const float b30, const float b0, unsigned int rows, cudaStream_t stream);
+void generate_mask(const ggml_tensor * node, int8_t* bitmask, const float b30, const float b0, unsigned int rows, cudaStream_t stream);
 
-void mask_activation(ggml_tensor * node, const uint8_t* bitmask, unsigned int rows, cudaStream_t stream);
+void mask_activation(ggml_tensor * node, const int8_t* bitmask, unsigned int rows, cudaStream_t stream);
 
-void maskColumnsGPUDevice(const ggml_tensor * node, float* masked_act, const uint8_t* bitmask, unsigned int rows, cudaStream_t stream);
+void maskColumnsGPUDevice(const ggml_tensor * node, float* masked_act, const int8_t* bitmask, unsigned int rows, cudaStream_t stream);

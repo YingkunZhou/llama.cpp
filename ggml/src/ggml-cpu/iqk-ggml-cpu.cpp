@@ -5478,11 +5478,39 @@ static inline void stealing_barrier(int n_threads) {
     #pragma omp barrier
 }
 
+static inline int count_zeros_simd(const int8_t mask[32]) {
+    // load 32 int8_t elements to avx256 register
+    __m256i vec = _mm256_loadu_si256((const __m256i*)mask);
+
+    // compare to 0 to get mask (OXFF indicates 0, 0x00 non-0)
+    __m256i cmp = _mm256_cmpeq_epi8(vec, _mm256_setzero_si256());
+
+    // move compare result to general register
+    uint32_t mask1 = _mm256_movemask_epi8(cmp);
+
+    // use pop cnt to count 1 (each 1 correspond to a 0)
+    return __builtin_popcount(mask1);
+}
+
+static inline void make_zeros_mod4(int8_t block[32]) {
+    int need = (4 - (count_zeros_simd(block) % 4)) % 4;
+    for (;;) {
+        for (int j = 0; j < 32; j++) {
+            if (need == 0) return;
+            if (block[j] != 0) {
+                block[j]--;
+                if (block[j] == 0) {
+                    need--;
+                }
+            }
+        }
+    }
+}
+
 extern "C" __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, long Ny, long ne00,
         int typeA, const void * A, long strideA,
         int typeB, const void * B, long strideB,
-        float * C, long stride_C, int ith, int nth, const int8_t * act_mask) {
-
+        float * C, long stride_C, int ith, int nth, int8_t * act_mask, bool need_adjust_mask) {
     auto etypeA = ggml_type(typeA);
     if (auto dequant_type = iqk_is_dequant_better(etypeA, Ny); dequant_type != etypeA) {
         if (!iqk_prepare(dequant_type, typeB, ne00)) return false;
@@ -5533,6 +5561,13 @@ extern "C" __attribute__ ((visibility ("default"))) bool iqk_mul_mat(long Nx, lo
         int ngroups = Nx/QK_T;
         // ATTENTION: here we recommand max(nth) == 16 because batch_size is only up to 8
         assert(nth == 1 || (nth%2 == 0 && nth <= 16));
+        if (need_adjust_mask) {
+            long ne_per_th = ne00/nth;
+            int8_t * start_act_mask = (int8_t *) act_mask + ith*ne_per_th;
+            for (long bi = 0; bi < ne_per_th; bi += 32) {
+                make_zeros_mod4(start_act_mask + bi);
+            }
+        }
         int nsplit = 1;
         if (0 < ngroups%nth && ngroups%nth <= nth/2) nsplit = 2;
         std::atomic<int>* flag = &DuoThreadReduce[ith/2].flag;

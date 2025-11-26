@@ -2021,6 +2021,9 @@ int main(int argc, char ** argv) {
     if (!params.speculative.model.path.empty()) {
         llama_model_params residual_model_params = common_model_params_to_llama(params);
         residual_model_params.use_as_residual = true;
+        if (params.n_batch == 5 && params.n_ctx == 5) {
+            residual_model_params.n_gpu_layers = 0;
+        }
         params.model_res = llama_model_load_from_file(params.speculative.model.path.c_str(), residual_model_params);
         GGML_ASSERT(params.model_res);
     }
