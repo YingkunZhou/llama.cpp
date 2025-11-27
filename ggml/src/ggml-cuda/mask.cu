@@ -14,7 +14,7 @@ __global__ static void generate_mask_by_rows(const float* activation, int8_t* de
     // Calculate the sum of squares
     __shared__ float device_squared_values[1024];
     #pragma unroll
-    for(int i = threadIdx.x * 4; i < 1024; i += blockDim.x * 4) {
+    for(int i = threadIdx.x * 4; i < actual_group_size; i += blockDim.x * 4) {
         float sum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
         float val[4];
         #pragma unroll
@@ -94,8 +94,7 @@ void generate_mask(const ggml_tensor * node, int8_t* bitmask, const float b30, c
     unsigned int k = node->ne[0];
     unsigned int m = node->ne[1];
     int threads_per_block = 256;
-    assert(k % 1024 == 0);
-    unsigned int block_num = k / 1024;
+    unsigned int block_num = (k + 1023) / 1024;
     unsigned int bias = (m / 512) * 12;
     for (unsigned int base = bias; base < m ; base += rows){
         generate_mask_by_rows<<<block_num, threads_per_block, 0, stream>>>(activation + base * k, bitmask + ((base - bias) / rows) * k, k, rows, b30, b0);
