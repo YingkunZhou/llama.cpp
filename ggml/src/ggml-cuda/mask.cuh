@@ -13,6 +13,8 @@
 #include <cstdlib>
 #include <algorithm>
 
+#define DISABLE_FAST_GPU_VERIFY 0
+
 void generate_mask(const ggml_tensor * node, int8_t* bitmask, const float b30, const float b0, unsigned int rows, cudaStream_t stream);
 
 void mask_activation(ggml_tensor * node, const int8_t* bitmask, unsigned int rows, cudaStream_t stream);

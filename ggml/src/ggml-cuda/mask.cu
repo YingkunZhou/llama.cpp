@@ -84,7 +84,11 @@ __global__ static void generate_mask_by_rows(const float* activation, int8_t* de
     // Phase 3: Modify the masked
     if (threshold != 0) {
         for (int i = threadIdx.x ; i < actual_group_size; i += blockDim.x) {
+#if DISABLE_FAST_GPU_VERIFY
             device_mask_group[i] = max(0, device_mask_group[i] + 1 - threshold);
+#else
+            device_mask_group[i] = max(0, device_mask_group[i] - threshold);
+#endif
         }
     }
 }

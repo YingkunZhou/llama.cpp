@@ -2305,8 +2305,6 @@ __global__ static void print_gpu_float_array(const float* array, int size) {
 }
 #endif
 
-#define DISABLE_FAST_GPU_VERIFY 0
-
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
     ggml_tensor * dst_residual = dst->residual;
     bool only_GPU = dst_residual == NULL || dst_residual->buffer == NULL ||
