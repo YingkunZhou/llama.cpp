@@ -2305,7 +2305,7 @@ __global__ static void print_gpu_float_array(const float* array, int size) {
 }
 #endif
 
-#define ENABLE_FAST_GPU_VERIFY 0
+#define DISABLE_FAST_GPU_VERIFY 0
 
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
     ggml_tensor * dst_residual = dst->residual;
@@ -2595,7 +2595,7 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
                 GGML_ASSERT(dst->op == GGML_OP_MUL_MAT);
                 GGML_ASSERT(ggml_cuda_get_device() == 0); // TODO
                 const ggml_tensor * res_src0 = dst_residual->src[0];
-#if ENABLE_FAST_GPU_VERIFY
+#if !DISABLE_FAST_GPU_VERIFY
                 ggml_tensor res_src1_new;
                 ggml_tensor * res_src1 = &res_src1_new;
                 memcpy(res_src1, dst->src[1], sizeof(ggml_tensor));
@@ -2622,14 +2622,13 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
                 } else { // if (use_mul_mat_q)
                     ggml_cuda_op_mul_mat(ctx, res_src0, res_src1, dst_residual, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
                 }
-            } else {
+            }
+#if DISABLE_FAST_GPU_VERIFY
+            else {
                 GGML_ASSERT(dst->op != GGML_OP_MUL_MAT);
                 const float low_median_threshold  = ((const float *)(dst_residual->op_params))[14];
                 const float high_median_threshold = ((const float *)(dst_residual->op_params))[15];
                 bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && dst->ne[1] == 5;
-#if ENABLE_FAST_GPU_VERIFY
-                enable_sparsity = false;
-#endif
                 if (enable_sparsity) {
                     void * bitmask = dst_residual->src[2]->data;
                     generate_mask(dst, (int8_t *) bitmask,
@@ -2637,6 +2636,7 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
                     mask_activation(dst, (const int8_t *) bitmask, 5, ctx.stream());
                 }
             }
+#endif
         }
         else {
             if (dst_residual->src[0]) {
@@ -3048,10 +3048,6 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
                         const float low_median_threshold  = ((const float *)(node_res->op_params))[14];
                         const float high_median_threshold = ((const float *)(node_res->op_params))[15];
                         bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && node->ne[1] == 5;
-#if ENABLE_FAST_GPU_VERIFY
-                        enable_sparsity = false;
-                        GGML_ASSERT(node_res->buffer == NULL);
-#endif
                         if (node_res->buffer) {
                             quantize_fp32_to_q8_KS_cuda(
                                 (const float *)node->data, node_res->extra,
@@ -3073,12 +3069,15 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
                                 node_res->op_params[0] = 1;
                             }
                             CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
-                        } else if (enable_sparsity) {
+                        }
+#if DISABLE_FAST_GPU_VERIFY
+                        else if (enable_sparsity) {
                             void * act_mask = node_res->src[2]->data;
                             generate_mask(node, (int8_t *) act_mask,
                             low_median_threshold, high_median_threshold, 5, cuda_ctx->stream());
                             mask_activation(node, (const int8_t *) act_mask, 5, cuda_ctx->stream());
                         }
+#endif
                     }
     }
     #pragma omp barrier
@@ -3094,10 +3093,6 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
                         const float low_median_threshold  = ((const float *)(mul_tensor_res->op_params))[14];
                         const float high_median_threshold = ((const float *)(mul_tensor_res->op_params))[15];
                         bool enable_sparsity = low_median_threshold > 0 && high_median_threshold > 0 && mul_tensor->ne[1] == 5;
-#if ENABLE_FAST_GPU_VERIFY
-                        enable_sparsity = false;
-                        GGML_ASSERT(mul_tensor_res->buffer == NULL);
-#endif
                         if (mul_tensor_res->buffer) {
                             quantize_fp32_to_q8_KS_cuda(
                                 (const float *)mul_tensor->data, mul_tensor_res->extra,
@@ -3118,12 +3113,15 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
                                 mul_tensor_res->op_params[0] = 1;
                             }
                             CUDA_CHECK(cudaStreamSynchronize(cuda_ctx->stream()));
-                        } else if (enable_sparsity) {
+                        }
+#if DISABLE_FAST_GPU_VERIFY
+                        else if (enable_sparsity) {
                             void * act_mask = mul_tensor_res->src[2]->data;
                             generate_mask(node, (int8_t *) act_mask,
                             low_median_threshold, high_median_threshold, 5, cuda_ctx->stream());
                             mask_activation(mul_tensor, (const int8_t *) act_mask, 5, cuda_ctx->stream());
                         }
+#endif
                     }
     }
     #pragma omp barrier
