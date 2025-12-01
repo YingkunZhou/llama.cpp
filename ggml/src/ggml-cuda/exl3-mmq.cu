@@ -289,7 +289,7 @@ void exl3_mmq
     GGML_ASSERT(A->type == GGML_TYPE_F16);
     //alloc w from cuda_pool which stores the dequantized weights
     ggml_cuda_pool_alloc<half> w(ctx.pool(device));
-    w.alloc(B->ne[0] * B->ne[1]);
+    w.alloc(ggml_nelements(B));
     half * w_ptr = w.ptr;
     had_r_128(ctx, A, A_had_ptr, suh_ptr, nullptr, 1.0f);
     reconstruct(ctx, w_ptr, B, B->ne[2]/ggml_blck_size(B->type), mcg_mult, mul1_mult);

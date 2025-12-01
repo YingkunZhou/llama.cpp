@@ -55,7 +55,7 @@ namespace cg = cooperative_groups;
 
 typedef void (*fp_exl3_gemm_kernel) (EXL3_GEMM_ARGS);
 
-std::set<void*> kernel_attr_set[MAX_DEVICES];
+std::set<void*> kernel_attr_set;
 
 static int select_gemm_shape(int cc, int size_k, int size_n, int bits, bool multi)
 {
@@ -896,7 +896,6 @@ int* DevCtx::get_locks()
     std::lock_guard<std::mutex> lock(mtx);
     if (!locks)
     {
-        cudaSetDevice(0);
         cudaMalloc(&locks, MAX_TILES_C * sizeof(int));
         cudaMemset(locks, 0, MAX_TILES_C * sizeof(int));
     }
@@ -987,10 +986,10 @@ int exl3_mmvq
     if (!kernel) return 0;
 
     // Launch
-    if (kernel_attr_set[device].find((void*)kernel) == kernel_attr_set[device].end())
+    if (kernel_attr_set.find((void*)kernel) == kernel_attr_set.end())
     {
         cudaFuncSetAttribute(kernel, cudaFuncAttributeMaxDynamicSharedMemorySize, SMEM_MAX);
-        kernel_attr_set[device].insert((void*)kernel);
+        kernel_attr_set.insert((void*)kernel);
     }
     void* kernelArgs[] =
     {

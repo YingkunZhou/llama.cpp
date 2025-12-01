@@ -2075,7 +2075,6 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     if(src0->type == GGML_TYPE_EXL3) {
         // Here we only support single GPU device
         GGML_ASSERT(ggml_cuda_get_device() == 0);
-        cudaStream_t stream = ctx.stream();
         const int64_t blck_size = ggml_blck_size(src0->type);
         size_t offset_u = (src0->ne[0]/blck_size)*(src0->ne[1]/blck_size)*src0->ne[2];
         GGML_ASSERT(offset_u < ggml_nbytes(src0)/2);
@@ -2095,14 +2094,14 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         ggml_cuda_pool_alloc<half> src1_as_f16(ctx.pool(ggml_cuda_get_device()));
         const to_fp16_cuda_t to_fp16_cuda = ggml_get_to_fp16_cuda(src1->type);
         GGML_ASSERT(to_fp16_cuda != nullptr);
-        size_t ne = src1->ne[0] * src1->ne[1];
+        size_t ne = ggml_nelements(src1);
         src1_as_f16.alloc(ne);
         to_fp16_cuda(src1->data, src1_as_f16.get(), ne, ctx.stream());
         src1_fp16->data = src1_as_f16.get();
         src1_fp16->type = GGML_TYPE_F16;
 
         ggml_cuda_pool_alloc<half> xh(ctx.pool(ggml_cuda_get_device()));
-        xh.alloc(src1->ne[0] * src1->ne[1]);
+        xh.alloc(ne);
         half * A_had_ptr = xh.get();
         if (src1->ne[1] < 32) {
             exl3_mmvq(ctx, src1_fp16, src0, dst, suh_ptr, A_had_ptr, svh_ptr, 0, 0);
