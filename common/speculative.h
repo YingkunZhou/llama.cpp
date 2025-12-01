@@ -2,8 +2,20 @@
 
 #include "llama.h"
 #include "common.h"
+#include <algorithm>
+#include <random>
 
-struct common_speculative;
+#define SPECULATIVE_SAMPLING 1
+struct common_speculative {
+    struct llama_context * ctx;
+    struct common_sampler * smpl;
+
+    llama_batch batch;
+    llama_tokens prompt;
+#if SPECULATIVE_SAMPLING
+    std::vector<std::unordered_map<int, float>> cur_maps;
+#endif
+};
 
 struct common_speculative_params {
     int n_draft = 16;  // max drafted tokens
@@ -12,7 +24,7 @@ struct common_speculative_params {
     float p_min = 0.75f; // min probability required to accept a token in the draft
 };
 
-struct common_speculative * common_speculative_init(struct llama_context * ctx_dft);
+struct common_speculative * common_speculative_init(struct llama_context * ctx_dft, common_params_sampling * sampling_params);
 
 void common_speculative_free(struct common_speculative * spec);
 

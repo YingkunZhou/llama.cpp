@@ -130,13 +130,19 @@ int main(int argc, char ** argv) {
     params_spec.n_reuse = llama_n_ctx(ctx_dft) - n_draft;
     params_spec.p_min   = p_min;
 
-    struct common_speculative * spec = common_speculative_init(ctx_dft);
+    struct common_speculative * spec = common_speculative_init(ctx_dft, &params.sampling);
 
     llama_batch batch_tgt = llama_batch_init(llama_n_batch(ctx_tgt), 0, 1);
 
     const auto t_enc_end = ggml_time_us();
 
     const auto t_dec_start = ggml_time_us();
+
+#if SPECULATIVE_SAMPLING
+    // llama_token --> prob mapping
+    std::default_random_engine rng(params.sampling.seed == LLAMA_DEFAULT_SEED ? std::random_device()() : params.sampling.seed);
+    std::uniform_real_distribution<> u_dist;
+#endif
 
     while (true) {
         // optionally, generate draft tokens that can be appended to the target batch
@@ -177,7 +183,62 @@ int main(int argc, char ** argv) {
         // available logits from the batch and sample the next token until we run out of logits or the sampler
         // disagrees with the draft
         //
+#if SPECULATIVE_SAMPLING
+        int i_dft = 0;
+        std::vector<llama_token> ids;
+        while (i_dft < n_draft) {
+            llama_token token_id = common_sampler_sample(smpl, ctx_tgt, i_dft);
+            llama_token draft_token_id = draft[i_dft];
+            const llama_token_data_array * cur_p = common_sampler_get_candidates(smpl);
+            if (cur_p->size == 1) {
+                common_sampler_accept(smpl, token_id, true);
+                ids.push_back(token_id);
+                if (token_id != draft_token_id) {
+                    break;
+                } else {
+                    ++i_dft;
+                }
+            } else {
+                float accept_p = 0.0;
+                auto cur_map = spec->cur_maps[i_dft];
+                for (size_t i = 0; i < cur_p->size; ++i) {
+                    token_id = cur_p->data[i].id;
+                    if (token_id == draft_token_id) {
+                        accept_p = cur_p->data[i].p / cur_map[token_id];
+                        if (cur_p->data[i].p >= cur_map[token_id]) {
+                            break;
+                        }
+                    }
+                    cur_p->data[i].p = std::max(0.0f, cur_p->data[i].p - cur_map[token_id]);
+                }
+                float r = u_dist(rng);
+                if (r > accept_p) {
+                    LOG_DBG("speculative sampling were rejected, sampling from residual distribution\n");
+                    std::vector<float> probs(cur_p->size);
+                    for (size_t i = 0; i < cur_p->size; ++i) {
+                        probs[i] = cur_p->data[i].p;
+                    }
+                    std::discrete_distribution<> dist(probs.begin(), probs.end());
+                    const int idx = dist(rng);
+                    token_id  = cur_p->data[idx].id;
+                    common_sampler_accept(smpl, token_id, true);
+                    ids.push_back(token_id);
+                    break;
+                } else {
+                    common_sampler_accept(smpl, draft_token_id, true);
+                    ids.push_back(draft_token_id);
+                    ++i_dft;
+                }
+            }
+        }
+        if (i_dft == n_draft) {
+            llama_token token_id = common_sampler_sample(smpl, ctx_tgt, i_dft);
+            common_sampler_accept(smpl, token_id, true);
+            ids.push_back(token_id);
+        }
+#else
         const auto ids = common_sampler_sample_and_accept_n(smpl, ctx_tgt, draft);
+#endif
 
         //LOG_DBG("ids: %s\n", string_from(ctx_tgt, ids).c_str());
 

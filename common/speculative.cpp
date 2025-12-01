@@ -10,21 +10,16 @@
 #define SPEC_VOCAB_MAX_SIZE_DIFFERENCE  128
 #define SPEC_VOCAB_CHECK_START_TOKEN_ID 5
 
-struct common_speculative {
-    struct llama_context * ctx;
-    struct common_sampler * smpl;
-
-    llama_batch batch;
-    llama_tokens prompt;
-};
-
 struct common_speculative * common_speculative_init(
-        struct llama_context * ctx_dft) {
+        struct llama_context * ctx_dft, common_params_sampling * sampling_params) {
     auto * result = new common_speculative {
         /* .ctx    = */ ctx_dft,
         /* .smpl   = */ nullptr,
         /* .batch  = */ llama_batch_init(llama_n_batch(ctx_dft), 0, 1),
         /* .prompt = */ {},
+#if SPECULATIVE_SAMPLING
+        /* .cur_maps = */ std::vector<std::unordered_map<int, float>>(5),
+#endif
     };
 
     // TODO: optimize or pass from outside?
@@ -46,6 +41,11 @@ struct common_speculative * common_speculative_init(
     }
 #else
     {
+#if SPECULATIVE_SAMPLING
+        sampling_params->no_perf = false;
+        sampling_params->penalty_present = 0;
+        result->smpl = common_sampler_init(llama_get_model(ctx_dft), *sampling_params);
+#else
         common_params_sampling params;
         params.no_perf = false;
 
@@ -56,6 +56,7 @@ struct common_speculative * common_speculative_init(
         };
 
         result->smpl = common_sampler_init(llama_get_model(ctx_dft), params);
+#endif
     }
 #endif
 
@@ -243,9 +244,22 @@ llama_tokens common_speculative_gen_draft(
     for (int i = 0; i < params.n_draft; ++i) {
         common_batch_clear(batch);
 
+#if SPECULATIVE_SAMPLING
+        llama_token id = common_sampler_sample(smpl, ctx, 0, true);
+#else
         common_sampler_sample(smpl, ctx, 0, true);
+#endif
 
         const auto * cur_p = common_sampler_get_candidates(smpl);
+
+#if SPECULATIVE_SAMPLING
+        auto &cur_map = spec->cur_maps[i];
+        cur_map.clear();
+        for (size_t c = 0; c < cur_p->size; ++c) {
+            llama_token_data cp_data = cur_p->data[c];
+            cur_map[cp_data.id] = cp_data.p;
+        }
+#else
 
         for (int k = 0; k < std::min(3, (int) cur_p->size); ++k) {
             LOG_DBG(" - draft candidate %3d, pos %3d: %6d (%8.3f) '%s'\n",
@@ -256,6 +270,7 @@ llama_tokens common_speculative_gen_draft(
         const llama_token id = cur_p->data[0].id;
 
         common_sampler_accept(smpl, id, true);
+#endif
 
         result.push_back(id);
 
