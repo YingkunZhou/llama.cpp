@@ -1,5 +1,8 @@
 #ifndef GGML_COMMON_DECL
 
+#define USE_KERNEL_FUSION 1
+#define USE_ZERO_COPY     1
+
 #if defined(GGML_COMMON_DECL_C)
 #include <stdint.h>
 
@@ -445,6 +448,23 @@ typedef struct {
     uint8_t  qs[QK_K/4];
 } block_iq2_ks;
 static_assert(sizeof(block_iq2_ks) == sizeof(uint16_t) + QK_K/64 + QK_K/4, "wrong iq2_ks block size/padding");
+
+#define QK_T 256
+typedef struct {
+    uint8_t  extra[QK_T/8];
+    uint8_t  scale_h[QK_T/8];
+    uint32_t scale_l[QK_T/8];
+} subblock_iq2_ks_meta;
+static_assert(sizeof(subblock_iq2_ks_meta) == QK_T/8+QK_T/8+4*QK_T/8, "wrong iq2_ks_t block meta size/padding");
+
+#if defined __x86_64__
+#if defined HAVE_FANCY_SIMD
+    #undef HAVE_FANCY_SIMD
+#endif
+#if defined(__AVX512F__) && defined(__AVX512VNNI__) && defined(__AVX512VL__) && defined(__AVX512BW__) && defined(__AVX512DQ__)
+    #define HAVE_FANCY_SIMD
+#endif
+#endif
 
 typedef struct {
     ggml_half d;

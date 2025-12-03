@@ -205,6 +205,119 @@ void ggml_cuda_op_elu(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 }
 /* gated ops */
 
+__device__ void quantize_q8_KS_GLU_fusion(const float* __restrict__ x,
+                                block_q8_K* __restrict__ y,
+                                int64_t k) {
+    const int block_idx = blockIdx.x;
+    const int warp_id = threadIdx.x / 32;
+    const int lane_id = threadIdx.x % 32;
+    const int num_warps = blockDim.x / 32;
+
+    const float* xb = x + block_idx * QK_K;
+    block_q8_K* y_block = y + block_idx;
+
+    float local_max = 0.0f;
+    for (int i = warp_id * 32 + lane_id; i < QK_K; i += num_warps * 32) {
+        float abs_val = fabsf(xb[i]);
+        if (abs_val > local_max) {
+            local_max = abs_val;
+        }
+    }
+
+    for (int offset = 16; offset > 0; offset /= 2) {
+        float other = __shfl_down_sync(0xFFFFFFFF, local_max, offset);
+        if (other > local_max) local_max = other;
+    }
+
+    __shared__ float warp_max[32];
+    if (lane_id == 0) {
+        warp_max[warp_id] = local_max;
+    }
+    __syncthreads();
+
+    if (threadIdx.x == 0) {
+        float global_max = 0.0f;
+        for (int i = 0; i < num_warps; i++) {
+            if (warp_max[i] > global_max) {
+                global_max = warp_max[i];
+            }
+        }
+        y_block->d = global_max / 127.0f;
+        warp_max[0] = global_max;
+    }
+    __syncthreads();
+
+    float maxAbs = warp_max[0];
+    const float id = (maxAbs != 0.0f) ? 127.0f / maxAbs : 0.0f;
+
+    int8_t* q8 = y_block->qs;
+    int32_t* sum32 =(int32_t*) y_block->bsums;
+
+    for (int group = warp_id; group < QK_K/32; group += num_warps) {
+        const float* group_start = xb + group * 32;
+        int group_sum = 0;
+
+        if (lane_id < 32) {
+            float scaled_val = group_start[lane_id] * id;
+
+            int32_t quantized;
+            if (scaled_val >= 0.0f) {
+                quantized = (int32_t)(scaled_val + 0.5f);
+            } else {
+                quantized = (int32_t)(scaled_val - 0.5f);
+            }
+
+            if (quantized > 127) quantized = 127;
+            if (quantized < -127) quantized = -127;
+
+            q8[group * 32 + lane_id] = (int8_t)quantized;
+            group_sum = quantized;
+        }
+
+        for (int offset = 16; offset > 0; offset /= 2) {
+            group_sum += __shfl_down_sync(0xFFFFFFFF, group_sum, offset);
+        }
+
+        if (lane_id == 0) {
+            sum32[group] = group_sum;
+        }
+    }
+
+    if (threadIdx.x == 0) {
+        int total_sum = 0;
+        for (int i = 0; i < QK_K/32; i++) {
+            total_sum += sum32[i];
+        }
+        y_block->sum = y_block->d * total_sum;
+    }
+}
+
+template <float (*op)(float), typename T>
+static __global__ void unary_gated_op_kernel_quantize_Q8K_fusion(const T * x, const T * g, T * dst, block_q8_K* y, int64_t k, const int64_t n, const int64_t o0, const int64_t o1) {
+    const int64_t i = int64_t(blockDim.x)*blockIdx.x + threadIdx.x;
+
+    if (i >= k) {
+        return;
+    }
+
+    // perform base op and multiply with gate (either offset in same tensor or a separate one)
+    const int64_t j0 = (i / n) * o0 + (i % n);
+    const int64_t j1 = o0 == o1 ? j0 : (i / n) * o1 + (i % n);
+
+    dst[i] = (T)(op((float)x[j0]) * (float)g[j1]);
+
+    __syncthreads();
+
+    quantize_q8_KS_GLU_fusion((const float*)dst, y, k);
+
+}
+
+template <float (*op)(float), typename T>
+static void unary_gated_cuda_quantize_Q8K_fusion(const T * x, const T * g, T * dst, block_q8_K* y,const int64_t k, const int64_t n, const int64_t o0, const int64_t o1, cudaStream_t stream) {
+    const int num_blocks = (k + CUDA_NEG_BLOCK_SIZE - 1) / CUDA_NEG_BLOCK_SIZE;
+    unary_gated_op_kernel_quantize_Q8K_fusion<op><<<num_blocks, CUDA_NEG_BLOCK_SIZE, 0, stream>>>(x, g, dst, y, k, n, o0, o1);
+}
+
 template <float (*op)(float), typename T>
 static __global__ void unary_gated_op_kernel(const T * x, const T * g, T * dst, const int64_t k, const int64_t n, const int64_t o0, const int64_t o1) {
     const int64_t i = int64_t(blockDim.x)*blockIdx.x + threadIdx.x;
@@ -257,6 +370,40 @@ void ggml_cuda_op_unary_gated(ggml_backend_cuda_context & ctx, ggml_tensor * dst
 
     const int32_t swapped = ((const int32_t *) dst->op_params)[1];
 
+#if USE_KERNEL_FUSION
+    ggml_tensor * dst_residual = dst->residual;
+    bool only_GPU = dst_residual == NULL || dst_residual->buffer == NULL || !ggml_backend_buffer_is_host(dst_residual->buffer);
+    if (!dst_residual->src[0] && !only_GPU && dst_residual && dst->ne[1] < 32){
+        if (src0->type == GGML_TYPE_F16) {
+            half * src0_p = (half *) src0_d;
+            half * src1_p = (half *) src1_d;
+
+            if (!src1) {
+                src0_p += swapped ? nc : 0;
+                src1_p += swapped ? 0 : nc;
+            }
+#if USE_ZERO_COPY
+            unary_gated_cuda_quantize_Q8K_fusion<op>(src0_p, src1_p, (half *)dst_d, (block_q8_K*)dst_residual->data, ggml_nelements(dst), nc, src0_o / sizeof(half), src1_o / sizeof(half), stream);
+#else
+            unary_gated_cuda_quantize_Q8K_fusion<op>(src0_p, src1_p, (half *)dst_d, (block_q8_K*)dst_residual->extra, ggml_nelements(dst), nc, src0_o / sizeof(half), src1_o / sizeof(half), stream);
+#endif
+        } else {
+            float * src0_p = (float *) src0_d;
+            float * src1_p = (float *) src1_d;
+
+            if (!src1) {
+                src0_p += swapped ? nc : 0;
+                src1_p += swapped ? 0 : nc;
+            }
+#if USE_ZERO_COPY
+            unary_gated_cuda_quantize_Q8K_fusion<op>(src0_p, src1_p, (float *)dst_d, (block_q8_K*)dst_residual->data, ggml_nelements(dst), nc, src0_o / sizeof(float), src1_o / sizeof(float), stream);
+#else
+            unary_gated_cuda_quantize_Q8K_fusion<op>(src0_p, src1_p, (float *)dst_d, (block_q8_K*)dst_residual->extra, ggml_nelements(dst), nc, src0_o / sizeof(float), src1_o / sizeof(float), stream);
+#endif
+        }
+        return ;
+    }
+#endif
     if (src0->type == GGML_TYPE_F16) {
         half * src0_p = (half *) src0_d;
         half * src1_p = (half *) src1_d;

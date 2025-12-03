@@ -1,6 +1,181 @@
 #include "norm.cuh"
 #include <cstdint>
 
+
+__device__ __forceinline__ void quantize_q8_K_device(
+    const float* __restrict__ x,
+    block_q8_K* __restrict__ y,
+    int64_t k
+) {
+    const int tid     = threadIdx.x;
+    const int lane    = tid & 31;
+    const int warp_id = tid >> 5;
+
+    const int warps_per_block = blockDim.x >> 5;   // 1 (32 threads) or 32 (1024 threads)
+    const int num_blocks = k / QK_K;
+
+    for (int block_idx = warp_id;
+         block_idx < num_blocks;
+         block_idx += warps_per_block) {
+
+        const float* xb = x + block_idx * QK_K;
+        block_q8_K* yb  = y + block_idx;
+
+        // ---- max(abs) ----
+        float local_max = 0.0f;
+        #pragma unroll
+        for (int i = lane; i < QK_K; i += 32) {
+            float a = fabsf(xb[i]);
+            if (a > local_max) local_max = a;
+        }
+
+        #pragma unroll
+        for (int off = 16; off > 0; off >>= 1) {
+            local_max = fmaxf(
+                local_max,
+                __shfl_down_sync(0xffffffff, local_max, off)
+            );
+        }
+
+        float maxAbs = __shfl_sync(0xffffffff, local_max, 0);
+
+        if (lane == 0) {
+            yb->d = maxAbs / 127.0f;
+        }
+
+        const float d  = maxAbs / 127.0f;
+        const float id = (maxAbs != 0.0f) ? (127.0f / maxAbs) : 0.0f;
+
+        int8_t*  qs    = yb->qs;
+        int32_t* bsums = (int32_t*)yb->bsums;
+
+        // ---- quantize + sums ----
+        int total_sum = 0;
+
+        #pragma unroll
+        for (int g = 0; g < QK_K / 32; ++g) {
+            int idx = g * 32 + lane;
+            float v = xb[idx] * id;
+
+            int q = (v >= 0.0f) ? (int)(v + 0.5f) : (int)(v - 0.5f);
+            q = max(-127, min(127, q));
+
+            qs[idx] = (int8_t)q;
+
+            int s = q;
+            #pragma unroll
+            for (int off = 16; off > 0; off >>= 1) {
+                s += __shfl_down_sync(0xffffffff, s, off);
+            }
+
+            if (lane == 0) {
+                bsums[g] = s;
+                total_sum += s;
+            }
+        }
+
+        if (lane == 0) {
+            yb->sum = d * total_sum;
+        }
+    }
+}
+
+template <int block_size, bool do_multiply = false>
+static __global__ void rms_norm_quantize_q8_KS(
+        const float * x, float * dst, block_q8_K* y, const int ncols, const int64_t stride_row, const int64_t stride_channel,
+        const int64_t stride_sample, const float eps, const float * mul = nullptr, const int64_t mul_stride_row = 0,
+        const int64_t mul_stride_channel = 0, const int64_t mul_stride_sample = 0, const int mul_ncols = 0,
+        const int mul_nrows = 0, const int mul_nchannels = 0, const int mul_nsamples = 0) {
+
+    const int nrows     = gridDim.x;
+    const int nchannels = gridDim.y;
+
+    const int row       = blockIdx.x;
+    const int channel   = blockIdx.y;
+    const int sample    = blockIdx.z;
+    const int tid       = threadIdx.x;
+
+    x   += sample*stride_sample + channel*stride_channel + row*stride_row;
+    dst += ((sample*nchannels + channel)*nrows + row)*ncols;
+
+    if constexpr (do_multiply) {
+        const int mul_row = row % mul_nrows;
+        const int mul_channel = channel % mul_nchannels;
+        const int mul_sample = sample % mul_nsamples;
+        mul += mul_sample*mul_stride_sample + mul_channel*mul_stride_channel + mul_row*mul_stride_row;
+    }
+
+    float tmp = 0.0f; // partial sum for thread in warp
+
+    for (int col = tid; col < ncols; col += block_size) {
+        const float xi = x[col];
+        tmp += xi * xi;
+    }
+
+    // sum up partial sums
+    tmp = warp_reduce_sum(tmp);
+    if constexpr (block_size > WARP_SIZE) {
+        static_assert(block_size == 1024, "unexpected block_size");
+        __shared__ float s_sum[32];
+        const int warp_id = threadIdx.x / WARP_SIZE;
+        const int lane_id = threadIdx.x % WARP_SIZE;
+        if (lane_id == 0) {
+            s_sum[warp_id] = tmp;
+        }
+        __syncthreads();
+        tmp = s_sum[lane_id];
+        tmp = warp_reduce_sum(tmp);
+    }
+    const float mean = tmp / ncols;
+    const float scale = rsqrtf(mean + eps);
+
+    for (int col = tid; col < ncols; col += block_size) {
+        if constexpr (do_multiply) {
+            const int mul_col = col % mul_ncols;
+            dst[col] = scale * x[col] * mul[mul_col];
+        } else {
+            dst[col] = scale * x[col];
+        }
+    }
+    __syncthreads();
+
+    block_q8_K* y_row = y + row * ncols / 256 ;
+    quantize_q8_K_device(dst,y_row,ncols);
+}
+
+static void rms_norm_quantize_q8_KS_cuda(
+        const float * x, float * dst, block_q8_K* y,const int ncols, const int nrows, const int nchannels, const int nsamples,
+        const int64_t stride_row, const int64_t stride_channel, const int64_t stride_sample, const float eps, cudaStream_t stream) {
+    const dim3 blocks_num(nrows, nchannels, nsamples);
+    if (ncols < 1024) {
+        const dim3 block_dims(WARP_SIZE, 1, 1);
+        rms_norm_quantize_q8_KS<WARP_SIZE, false><<<blocks_num, block_dims, 0, stream>>>(x, dst, y, ncols, stride_row, stride_channel, stride_sample, eps);
+    } else {
+        const dim3 block_dims(1024, 1, 1);
+        rms_norm_quantize_q8_KS<1024, false><<<blocks_num, block_dims, 0, stream>>>(x, dst, y, ncols, stride_row, stride_channel, stride_sample, eps);
+    }
+}
+
+static void rms_norm_mul_quantize_q8_KS_cuda(
+        const float * x, const float * mul, float * dst, block_q8_K* y, const int ncols, const int nrows, const int nchannels, const int nsamples,
+        const int64_t stride_row, const int64_t stride_channel, const int64_t stride_sample,
+        const int64_t mul_stride_row, const int64_t mul_stride_channel, const int64_t mul_stride_sample,
+        const int mul_ncols, const int mul_nrows, const int mul_nchannels, const int mul_nsamples,
+        const float eps, cudaStream_t stream) {
+    const dim3 blocks_num(nrows, nchannels, nsamples);
+    if (mul == nullptr) {
+        rms_norm_quantize_q8_KS_cuda(x, dst, y, ncols, nrows, nchannels, nsamples, stride_row, stride_channel, stride_sample, eps, stream);
+        return;
+    }
+    if (ncols < 1024) {
+        const dim3 block_dims(WARP_SIZE, 1, 1);
+        rms_norm_quantize_q8_KS<WARP_SIZE, true><<<blocks_num, block_dims, 0, stream>>>(x, dst, y, ncols, stride_row, stride_channel, stride_sample, eps, mul, mul_stride_row, mul_stride_channel, mul_stride_sample, mul_ncols, mul_nrows, mul_nchannels, mul_nsamples);
+    } else {
+        const dim3 block_dims(1024, 1, 1);
+        rms_norm_quantize_q8_KS<1024, true><<<blocks_num, block_dims, 0, stream>>>(x, dst, y, ncols, stride_row, stride_channel, stride_sample, eps, mul, mul_stride_row, mul_stride_channel, mul_stride_sample, mul_ncols, mul_nrows, mul_nchannels, mul_nsamples);
+    }
+}
+
 template <int block_size>
 static __global__ void norm_f32(
         const float * x, float * dst, const int ncols, const int64_t stride_row, const int64_t stride_channel,
@@ -490,8 +665,20 @@ void ggml_cuda_op_rms_norm_fused(ggml_backend_cuda_context & ctx, ggml_tensor * 
     const int mul_nrows     = mul_src->ne[1];
     const int mul_nchannels = mul_src->ne[2];
     const int mul_nsamples  = mul_src->ne[3];
-
+#if !USE_KERNEL_FUSION
     rms_norm_mul_f32_cuda(src0_d, mul_d, dst_d, ne00, ne01, ne02, ne03, s01, s02, s03, mul_s01, mul_s02, mul_s03, mul_ncols, mul_nrows, mul_nchannels, mul_nsamples, eps, stream);
+#else
+    ggml_tensor * mul_tensor_res = mul_tensor->residual;
+    if (mul_tensor_res && (mul_tensor_res->buffer != NULL || ggml_backend_buffer_is_host(mul_tensor_res->buffer)) && dst->ne[1] < 32) {
+#if USE_ZERO_COPY
+        rms_norm_mul_quantize_q8_KS_cuda(src0_d, mul_d, dst_d, (block_q8_K *)mul_tensor_res->data, ne00, ne01, ne02, ne03, s01, s02, s03, mul_s01, mul_s02, mul_s03, mul_ncols, mul_nrows, mul_nchannels, mul_nsamples, eps, stream);
+#else
+        rms_norm_mul_quantize_q8_KS_cuda(src0_d, mul_d, dst_d, (block_q8_K *)mul_tensor_res->extra, ne00, ne01, ne02, ne03, s01, s02, s03, mul_s01, mul_s02, mul_s03, mul_ncols, mul_nrows, mul_nchannels, mul_nsamples, eps, stream);
+#endif
+    }else{
+        rms_norm_mul_f32_cuda(src0_d, mul_d, dst_d, ne00, ne01, ne02, ne03, s01, s02, s03, mul_s01, mul_s02, mul_s03, mul_ncols, mul_nrows, mul_nchannels, mul_nsamples, eps, stream);
+    }
+#endif
 }
 
 void ggml_cuda_op_rms_norm_back(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {

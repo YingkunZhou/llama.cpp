@@ -17,6 +17,8 @@
 #define CUDA_COS_BLOCK_SIZE 256
 #define CUDA_GLU_BLOCK_SIZE 256
 
+__device__ void quantize_q8_KS_GLU_fusion(const float* __restrict__ x, block_q8_K* __restrict__ y, int64_t k);
+
 void ggml_cuda_op_abs(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
 void ggml_cuda_op_sgn(ggml_backend_cuda_context & ctx, ggml_tensor * dst);

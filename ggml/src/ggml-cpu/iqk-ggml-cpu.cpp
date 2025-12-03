@@ -3,15 +3,6 @@
 #include "repack.h"
 #include "simd-mappings.h"
 
-#if defined __x86_64__
-#if defined HAVE_FANCY_SIMD
-    #undef HAVE_FANCY_SIMD
-#endif
-#if defined(__AVX512F__) && defined(__AVX512VNNI__) && defined(__AVX512VL__) && defined(__AVX512BW__) && defined(__AVX512DQ__)
-    #define HAVE_FANCY_SIMD
-#endif
-#endif
-
 #define MM256_SET_M128I(a, b) _mm256_insertf128_si256(_mm256_castsi128_si256(b), (a), 1)
 #include <array>
 typedef void (*mul_mat_t)(int n, const void * vx, size_t bx, struct DataInfo * info, int nrc_x);
@@ -3038,15 +3029,7 @@ struct AlignedAtomicInt {
 AlignedAtomicInt DuoThreadReduce[8];
 AlignedAtomicInt current_chunk;
 
-#define QK_T 256
 #define NSUBS 8
-
-typedef struct {
-    uint8_t  extra[QK_T/8];
-    uint8_t  scale_h[QK_T/8];
-    uint32_t scale_l[QK_T/8];
-} subblock_iq2_ks_meta;
-static_assert(sizeof(subblock_iq2_ks_meta) == QK_T/8+QK_T/8+4*QK_T/8, "wrong iq2_ks_t block meta size/padding");
 
 #define USE_FULL_TRANS 1
 #define ENABLE_HARDWARE_PREFETCH 1
