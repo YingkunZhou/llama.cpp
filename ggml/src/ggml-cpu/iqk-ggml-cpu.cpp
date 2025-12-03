@@ -3134,7 +3134,8 @@ struct ZykIQ2KS_T {
         for (int i = 0; i < 16; prefetch_p++) {
             if (act_mask[prefetch_p] == 0) {
 #if ENABLE_HARDWARE_PREFETCH
-                _mm_prefetch(qs + prefetch_p * Nx/4, _MM_HINT_T0);
+                // _mm_prefetch(qs + prefetch_p * Nx/4, _MM_HINT_T0);
+                __builtin_prefetch(qs + prefetch_p * Nx/4, 0, 3);
 #endif
                 cur_p[i++] = prefetch_p;
             }
@@ -3227,7 +3228,8 @@ struct ZykIQ2KS_T {
                     for (int i = 0; i < 4; prefetch_p++) {
                         if (act_mask[prefetch_p] == 0) {
 #if ENABLE_HARDWARE_PREFETCH
-                            _mm_prefetch(qs + prefetch_p * Nx/4, _MM_HINT_T0);
+                            // _mm_prefetch(qs + prefetch_p * Nx/4, _MM_HINT_T0);
+                            __builtin_prefetch(qs + prefetch_p * Nx/4, 0, 3);
 #endif
                             cur_p[i++] = prefetch_p;
                         }
