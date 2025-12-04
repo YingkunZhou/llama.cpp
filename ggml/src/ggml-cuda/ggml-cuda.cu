@@ -2522,7 +2522,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         ggml_cuda_pool_alloc<half> src1_as_f16(ctx.pool(ggml_cuda_get_device()));
         const to_fp16_cuda_t to_fp16_cuda = ggml_get_to_fp16_cuda(src1->type);
         GGML_ASSERT(to_fp16_cuda != nullptr);
-        size_t ne = ggml_nelements(src1);
+        size_t ne = src1->ne[0] * src1->ne[1]; // DO NOT use ggml_nelements(src1);
         src1_as_f16.alloc(ne);
         to_fp16_cuda(src1->data, src1_as_f16.get(), ne, ctx.stream());
         src1_fp16->data = src1_as_f16.get();
