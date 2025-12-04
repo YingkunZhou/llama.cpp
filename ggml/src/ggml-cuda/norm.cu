@@ -669,7 +669,7 @@ void ggml_cuda_op_rms_norm_fused(ggml_backend_cuda_context & ctx, ggml_tensor * 
     rms_norm_mul_f32_cuda(src0_d, mul_d, dst_d, ne00, ne01, ne02, ne03, s01, s02, s03, mul_s01, mul_s02, mul_s03, mul_ncols, mul_nrows, mul_nchannels, mul_nsamples, eps, stream);
 #else
     ggml_tensor * mul_tensor_res = mul_tensor->residual;
-    if (mul_tensor_res && (mul_tensor_res->buffer != NULL || ggml_backend_buffer_is_host(mul_tensor_res->buffer)) && dst->ne[1] < 32) {
+    if (mul_tensor_res && mul_tensor_res->buffer && dst->ne[1] < 32) {
 #if USE_ZERO_COPY
         rms_norm_mul_quantize_q8_KS_cuda(src0_d, mul_d, dst_d, (block_q8_K *)mul_tensor_res->data, ne00, ne01, ne02, ne03, s01, s02, s03, mul_s01, mul_s02, mul_s03, mul_ncols, mul_nrows, mul_nchannels, mul_nsamples, eps, stream);
 #else

@@ -372,8 +372,7 @@ void ggml_cuda_op_unary_gated(ggml_backend_cuda_context & ctx, ggml_tensor * dst
 
 #if USE_KERNEL_FUSION
     ggml_tensor * dst_residual = dst->residual;
-    bool only_GPU = dst_residual == NULL || dst_residual->buffer == NULL || !ggml_backend_buffer_is_host(dst_residual->buffer);
-    if (!dst_residual->src[0] && !only_GPU && dst_residual && dst->ne[1] < 32){
+    if (dst_residual && dst_residual->buffer && dst->ne[1] < 32) {
         if (src0->type == GGML_TYPE_F16) {
             half * src0_p = (half *) src0_d;
             half * src1_p = (half *) src1_d;

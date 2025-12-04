@@ -3123,7 +3123,7 @@ static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct gg
                 qinput_size = (qinput_size + 63) & ~63;
                 // quanted_input & act_mask is adjcent
                 if (enable_sparsity) {
-#if USE_ZERO_COPY// here we use zero-copy
+#if USE_ZERO_COPY // here we use zero-copy
                     generate_mask(dst, (int8_t *) dst_residual->data + qinput_size,
                     low_median_threshold, high_median_threshold, 5, ctx.stream());
 #else
@@ -3605,7 +3605,7 @@ static void evaluate_and_capture_cuda_graph(ggml_backend_cuda_context * cuda_ctx
                             // to let bitmask start addr 64B (cacheline) aligned
                             qinput_size = (qinput_size + 63) & ~63;
                             if (enable_sparsity) {
-#if USE_ZERO_COPY// here we use zero-copy
+#if USE_ZERO_COPY // here we use zero-copy
                                 generate_mask(mul_tensor, (int8_t *) mul_tensor_res->data + qinput_size,
                                 low_median_threshold, high_median_threshold, 5, cuda_ctx->stream());
 #else
