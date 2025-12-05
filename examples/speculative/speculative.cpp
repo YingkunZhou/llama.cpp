@@ -669,6 +669,8 @@ int main(int argc, char ** argv) {
     llama_model_params residual_model_params = common_model_params_to_llama(params);
     residual_model_params.use_as_residual = true;
     residual_model_params.n_gpu_layers = params.speculative.n_gpu_layers;
+    // for phi-4 model is not cacheline alignment when use mmap
+    residual_model_params.use_mmap = false;
     params.model_res = llama_model_load_from_file(params.speculative.model.path.c_str(), residual_model_params);
     GGML_ASSERT(params.model_res);
     // load the draft model

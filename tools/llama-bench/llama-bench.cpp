@@ -1924,6 +1924,8 @@ int main(int argc, char ** argv) {
                 llama_model_params residual_model_params = inst.to_llama_mparams();
                 residual_model_params.use_as_residual = true;
                 residual_model_params.n_gpu_layers = 0;
+                // for phi-4 model is not cacheline alignment when use mmap
+                residual_model_params.use_mmap = false;
                 rmodel = llama_model_load_from_file(inst.residual.c_str(), residual_model_params);
             }
 
