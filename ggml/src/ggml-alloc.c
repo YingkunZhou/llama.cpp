@@ -705,10 +705,10 @@ bool ggml_gallocr_reserve_n(ggml_gallocr_t galloc, struct ggml_cgraph * graph, c
             size_t src2_size = ggml_backend_buft_get_alloc_size(galloc->bufts[0], res_node->src[2]);
             // output and bitmask is needed for every
             size_t output_w_bitmask = dst_size+src2_size;
-            residual_size[0] = MAX(residual_size[0], output_w_bitmask + MAX(src1_size,
+            residual_size[0] = MAX(residual_size[0], 64 + output_w_bitmask + MAX(src1_size,
                                     galloc->n_buffers == 2? src0_size : 0)); // GPU or CPU-only
-            residual_size[1] = MAX(residual_size[1], output_w_bitmask + src1_size); // CPU
-            residual_size[2] = ggml_backend_buffer_is_host(res_node->src[0]->buffer)? 0 : MAX(residual_size[2], output_w_bitmask); // GPU-only
+            residual_size[1] = MAX(residual_size[1], 64 + output_w_bitmask + src1_size); // CPU
+            residual_size[2] = ggml_backend_buffer_is_host(res_node->src[0]->buffer)? 0 : MAX(residual_size[2], 64 + output_w_bitmask); // GPU-only
         }
         struct node_alloc * node_alloc = &galloc->node_allocs[i];
         if (node->view_src || node->data) {
